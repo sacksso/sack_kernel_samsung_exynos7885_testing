@@ -2833,7 +2833,7 @@ static int slsi_set_country_code(struct wiphy *wiphy, struct wireless_dev *wdev,
 	int                      temp;
 	int                      type;
 	const struct nlattr      *attr;
-	char country_code[SLSI_COUNTRY_CODE_LEN];
+	char country_code[SLSI_COUNTRY_CODE_LEN] = {0};
 
 	SLSI_DBG3(sdev, SLSI_GSCAN, "Received country code command\n");
 
