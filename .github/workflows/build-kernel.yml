@@ -91,7 +91,7 @@ jobs:
             export CROSS_COMPILE_ARM32="$CROSS_COMPILE"
           fi
 
-          make O=out exynos7885-a7y18lte_defconfig
+          make ARCH=arm64 O=out lineage_a7y18lte_defconfig
           make O=out -j"$(nproc)"
 
       - name: Subir el Image compilado
