@@ -1,0 +1,111 @@
+# Compila el kernel de exynos7885-dev/kernel_samsung_exynos7885
+# (rama lineage-18.1, el mismo que usa tu LineageOS 18.1 del a7y18lte)
+# usando el toolchain GCC 4.9 de Google/LineageOS, tal como lo hace
+# la comunidad para este chip (confirmado contra un hilo de XDA con
+# los comandos reales de compilación para este dispositivo exacto:
+# defconfig "exynos7885-a7y18lte_defconfig", ANDROID_MAJOR_VERSION=q).
+#
+# NO PROBADO: nunca ejecuté este workflow (no tengo forma de correr
+# GitHub Actions desde acá). Puede que necesites ajustar algo en la
+# primera corrida - lo más probable es un nombre de rama del toolchain
+# que no exista o algún paquete de apt que falte. Mirá los logs del
+# job si falla y contame el error para que lo ajustemos.
+#
+# CÓMO USARLO:
+# 1. Forkeá https://github.com/exynos7885-dev/kernel_samsung_exynos7885
+#    a tu propia cuenta de GitHub.
+# 2. Copiá este archivo a .github/workflows/build-kernel.yml en la
+#    raíz de TU fork (no hace falta tocar nada más del kernel para
+#    esta primera corrida - es solo para confirmar que compila).
+# 3. Anda a la pestaña "Actions" de tu fork y corré el workflow a
+#    mano ("Run workflow").
+# 4. Al terminar, el Image compilado queda como "artifact" descargable
+#    desde la misma página del run.
+
+name: Build a7y18lte kernel
+
+on:
+  # Corré el workflow a mano desde la pestaña Actions de GitHub.
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    # Los kernels viejos como este a veces fallan con warnings que
+    # gcc moderno trata como error, o con -Werror heredado del
+    # defconfig. Si el build rompe por eso, es más rápido arreglarlo
+    # ahí que acá.
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout del kernel
+        uses: actions/checkout@v4
+        with:
+          # Cambiá esto por TU fork antes de correrlo, para poder
+          # despues iterar con tus propios cambios/commits.
+          repository: sack_kernel_samsung_exynos7885_testing
+          ref: lineage-18.1
+          path: kernel
+          fetch-depth: 1
+
+      - name: Checkout toolchain GCC 4.9 (aarch64)
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9
+          ref: lineage-18.1
+          path: toolchain/aarch64
+          fetch-depth: 1
+
+      - name: Checkout toolchain GCC 4.9 (arm32, para el CROSS_COMPILE_ARM32)
+        uses: actions/checkout@v4
+        with:
+          # OJO: no confirmé que este repo exista con este nombre
+          # exacto - es el patrón habitual de LineageOS/CyanogenMod
+          # para el par arm64/arm32 del mismo toolchain, pero si el
+          # checkout falla acá, buscá "arm-linux-androideabi-4.9" en
+          # github.com/LineageOS y ajustá el nombre.
+          repository: LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9
+          ref: lineage-18.1
+          path: toolchain/arm32
+          fetch-depth: 1
+        continue-on-error: true # no todos los defconfig usan el ARM32 helper - si este checkout falla, el build de abajo lo maneja igual
+
+      - name: Instalar dependencias de build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex libssl-dev \
+            libncurses-dev git-core zip
+
+      - name: Compilar kernel
+        working-directory: kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export ANDROID_MAJOR_VERSION=q
+          export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-android-"
+          if [ -d "$GITHUB_WORKSPACE/toolchain/arm32/bin" ]; then
+            export CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/toolchain/arm32/bin/arm-linux-androideabi-"
+          else
+            echo "toolchain arm32 no disponible, reutilizando el de aarch64 (mismo workaround que usa la comunidad para este chip)"
+            export CROSS_COMPILE_ARM32="$CROSS_COMPILE"
+          fi
+
+          make O=out exynos7885-a7y18lte_defconfig
+          make O=out -j"$(nproc)"
+
+      - name: Subir el Image compilado
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7y18lte-kernel-Image
+          # el nombre exacto del archivo de salida puede ser Image,
+          # Image.gz o Image.gz-dtb según cómo esté armado este
+          # defconfig en particular - si el paso anterior compiló
+          # bien pero este falla con "not found", listá
+          # kernel/out/arch/arm64/boot/ en un paso de debug y ajustá
+          # la ruta.
+          path: |
+            kernel/out/arch/arm64/boot/Image
+            kernel/out/arch/arm64/boot/Image.gz
+            kernel/out/arch/arm64/boot/Image.gz-dtb
+          if-no-files-found: warn
