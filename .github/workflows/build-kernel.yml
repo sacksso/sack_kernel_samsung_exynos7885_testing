@@ -43,7 +43,7 @@ jobs:
         with:
           # Cambiá esto por TU fork antes de correrlo, para poder
           # despues iterar con tus propios cambios/commits.
-          repository: sack_kernel_samsung_exynos7885_testing
+          repository: sacksso/sack_kernel_samsung_exynos7885_testing
           ref: lineage-18.1
           path: kernel
           fetch-depth: 1
