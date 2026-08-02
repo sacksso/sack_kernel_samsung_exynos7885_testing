@@ -1,0 +1,72 @@
+name: Build Kernel - CLEAN TEST (sin parches)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout del kernel (limpio, sin modificaciones)
+        uses: actions/checkout@v4
+        with:
+          repository: exynos7885-dev/kernel_samsung_exynos7885
+          ref: lineage-18.1
+          path: kernel
+          fetch-depth: 1
+
+      - name: Checkout toolchain GCC
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1
+          ref: lineage-18.1
+          path: toolchain/aarch64
+          fetch-depth: 1
+
+      - name: Instalar dependencias
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential bc bison flex libssl-dev \
+            libncurses-dev git-core zip \
+            gcc-arm-linux-gnueabi
+
+      # ============================================================
+      # COMPILACIÓN LIMPIA (sin ningún parche ni flag adicional)
+      # ============================================================
+      - name: Compilar kernel (limpio)
+        working-directory: kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
+          export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+
+          make O=out lineage_a7y18lte_defconfig
+          make O=out -j"$(nproc)"
+
+      # ============================================================
+      # VERIFICAR Image.gz-dtb
+      # ============================================================
+      - name: Verificar Image.gz-dtb
+        working-directory: kernel
+        run: |
+          if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "ERROR: No se generó Image.gz-dtb."
+            exit 1
+          else
+            echo "✅ Image.gz-dtb encontrado."
+            ls -la out/arch/arm64/boot/Image*
+          fi
+
+      # ============================================================
+      # SUBIR ARTIFACT (si compila)
+      # ============================================================
+      - name: Subir artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7y18lte-kernel-clean
+          path: kernel/out/arch/arm64/boot/Image*
+          if-no-files-found: error
