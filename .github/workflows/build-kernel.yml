@@ -42,16 +42,22 @@ jobs:
           echo "KBUILD_CFLAGS += -Wno-error=misleading-indentation -Wno-error=uninitialized -Wno-error=unused-variable" >> Makefile
 
       # ============================================================
-      # ELIMINAR -mgeneral-regs-only GLOBALMENTE
+      # ELIMINAR -mgeneral-regs-only (si aún existe)
       # ============================================================
-      - name: Eliminar -mgeneral-regs-only de los CFLAGS
+      - name: Eliminar -mgeneral-regs-only
         working-directory: kernel
         run: |
-          # Opción 1: Eliminar la bandera del Makefile principal
           sed -i 's/-mgeneral-regs-only//g' Makefile
-          # Opción 2: Añadir una línea que la remueva explícitamente
           echo "KBUILD_CFLAGS := $(filter-out -mgeneral-regs-only,$(KBUILD_CFLAGS))" >> Makefile
-          echo "Se eliminó -mgeneral-regs-only de las banderas de compilación"
+
+      # ============================================================
+      # FORZAR ALINEACIÓN PARA ATOMICIDAD
+      # ============================================================
+      - name: Forzar alineación para operaciones atómicas
+        working-directory: kernel
+        run: |
+          echo "KBUILD_CFLAGS += -mno-unaligned-access" >> Makefile
+          echo "Se agregó -mno-unaligned-access para garantizar atomicidad"
 
       # ============================================================
       # ACTIVAR SELINUX EN DEFCONFIG
