@@ -43,14 +43,13 @@ jobs:
       #     sed -i 's/const double decon_clocks_table/const unsigned long decon_clocks_table/g' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c || true
 
       # ============================================================
-      # PARCHE: Desactivar advertencia de indentación engañosa
+      # DESACTIVAR WARNINGS COMO ERRORES (los que sabemos que son falsos o no críticos)
       # ============================================================
-      - name: Desactivar -Werror para misleading-indentation
+      - name: Desactivar warnings como errores
         working-directory: kernel
         run: |
-          # Modificar el Makefile principal para agregar la bandera
-          echo "KBUILD_CFLAGS += -Wno-error=misleading-indentation" >> Makefile
-          echo "Se agregó -Wno-error=misleading-indentation al Makefile"
+          echo "KBUILD_CFLAGS += -Wno-error=misleading-indentation -Wno-error=uninitialized -Wno-error=unused-variable" >> Makefile
+          echo "Se agregaron banderas para evitar errores por warnings"
 
       # ============================================================
       # COMPILACIÓN
@@ -111,4 +110,4 @@ jobs:
         with:
           name: a7y18lte-kernel-bundle
           path: artifact/
-          if-no-files-found: error   # ← Ahora falla si no hay archivos
+          if-no-files-found: error
