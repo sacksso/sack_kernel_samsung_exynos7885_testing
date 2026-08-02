@@ -1,4 +1,4 @@
-name: Build Kernel - Clean + decon_reg fix (CFLAGS_REMOVE)
+name: Build Kernel - Final Fix (double→unsigned long)
 
 on:
   workflow_dispatch:
@@ -34,20 +34,19 @@ jobs:
             gcc-arm-linux-gnueabi
 
       # ============================================================
-      # PARCHE: Quitar -mgeneral-regs-only solo en decon_reg.c
-      # Usamos printf para asegurar salto de línea antes y después
+      # CORRECCIÓN: cambiar double → unsigned long en decon_clocks_table
       # ============================================================
-      - name: Quitar -mgeneral-regs-only solo en decon_reg.c
+      - name: Corregir tipo de decon_clocks_table (double -> unsigned long)
         working-directory: kernel
         run: |
-          printf '\nCFLAGS_REMOVE_decon_reg.o := -mgeneral-regs-only\n' >> drivers/video/fbdev/exynos/dpu_7885/Makefile
-          echo "--- Contenido final del Makefile del driver ---"
-          cat drivers/video/fbdev/exynos/dpu_7885/Makefile
-          echo "--- Confirmando que la línea quedó sola ---"
-          grep -n "CFLAGS_REMOVE_decon_reg" drivers/video/fbdev/exynos/dpu_7885/Makefile
+          echo "=== Antes ==="
+          grep -n "const double decon_clocks_table" drivers/video/fbdev/exynos/dpu_7885/decon_reg.c || echo "No encontrado"
+          sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
+          echo "=== Después ==="
+          grep -n "const unsigned long decon_clocks_table" drivers/video/fbdev/exynos/dpu_7885/decon_reg.c || echo "No encontrado"
 
       # ============================================================
-      # COMPILACIÓN
+      # COMPILACIÓN con KCFLAGS="-Wno-error"
       # ============================================================
       - name: Compilar kernel
         working-directory: kernel
@@ -62,8 +61,8 @@ jobs:
           make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS"
 
       # ============================================================
-      # VERIFICACIÓN DE SEGURIDAD: confirmar que decon_reg.o no
-      # contiene instrucciones NEON/FP reales
+      # VERIFICACIÓN DE SEGURIDAD: confirmar que decon_reg.o no tiene
+      # instrucciones NEON/FP reales
       # ============================================================
       - name: Verificar ausencia de instrucciones NEON/FP reales
         working-directory: kernel
@@ -75,7 +74,7 @@ jobs:
             echo "❌ Se encontraron instrucciones NEON/FP reales en decon_reg.o — NO continuar"
             exit 1
           else
-            echo "✅ decon_reg.o no usa NEON/FP real — confirmado que era solo el falso positivo del compilador"
+            echo "✅ decon_reg.o NO usa NEON/FP — confirmado, el cambio de tipo fue seguro"
           fi
 
       # ============================================================
@@ -98,6 +97,6 @@ jobs:
       - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a7y18lte-kernel-clean
+          name: a7y18lte-kernel-final
           path: kernel/out/arch/arm64/boot/Image*
           if-no-files-found: error
