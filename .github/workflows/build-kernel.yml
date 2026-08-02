@@ -34,16 +34,23 @@ jobs:
             gcc-arm-linux-gnueabi
 
       # ============================================================
-      # PARCHE: Corregir errores conocidos en el código fuente
+      # PARCHE OPCIONAL: Corregir error de 'double' en decon_reg.c
+      # (COMENTADO por ahora para probar si el kernel arranca sin él)
       # ============================================================
-      - name: Aplicar parches al código fuente
+      # - name: Aplicar parche a decon_reg.c (opcional)
+      #   working-directory: kernel
+      #   run: |
+      #     sed -i 's/const double decon_clocks_table/const unsigned long decon_clocks_table/g' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c || true
+
+      # ============================================================
+      # PARCHE: Desactivar advertencia de indentación engañosa
+      # ============================================================
+      - name: Desactivar -Werror para misleading-indentation
         working-directory: kernel
         run: |
-          echo "Aplicando parches a drivers/video/fbdev/exynos/dpu_7885/decon_reg.c"
-          # Cambiar 'double' por 'unsigned long' en la tabla de clocks
-          sed -i 's/const double decon_clocks_table/const unsigned long decon_clocks_table/g' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c || true
-          
-          # (Si hay otro parche, agregarlo aquí)
+          # Modificar el Makefile principal para agregar la bandera
+          echo "KBUILD_CFLAGS += -Wno-error=misleading-indentation" >> Makefile
+          echo "Se agregó -Wno-error=misleading-indentation al Makefile"
 
       # ============================================================
       # COMPILACIÓN
@@ -60,39 +67,48 @@ jobs:
           make O=out -j"$(nproc)"
 
       # ============================================================
-      # LISTAR SALIDA (debug)
+      # VERIFICACIÓN OBLIGATORIA: ¿Existe Image.gz-dtb?
       # ============================================================
-      - name: Listar salida (debug)
-        if: always()
+      - name: Verificar que Image.gz-dtb se haya generado
         working-directory: kernel
-        run: find out/arch/arm64/boot -maxdepth 2 2>/dev/null || echo "No se encontró la carpeta boot"
+        run: |
+          if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "ERROR: No se generó Image.gz-dtb. La compilación falló o el DTB no está embebido."
+            echo "Listado de out/arch/arm64/boot:"
+            ls -la out/arch/arm64/boot/ || true
+            exit 1
+          else
+            echo "✅ Image.gz-dtb encontrado."
+            ls -la out/arch/arm64/boot/Image*
+          fi
 
       # ============================================================
-      # PREPARAR ARTIFACT: incluir kernel + magiskboot
+      # DESCARGAR magiskboot (para empaquetado posterior)
       # ============================================================
-      - name: Descargar magiskboot (para empaquetado posterior)
+      - name: Descargar magiskboot
         run: |
-          # Descargar el APK de Magisk estable más reciente
           wget -O magisk.apk https://github.com/topjohnwu/Magisk/releases/download/v30.0/Magisk-v30.0.apk
-          # Extraer libmagiskboot.so de la arquitectura arm64-v8a
           unzip -j magisk.apk lib/arm64-v8a/libmagiskboot.so -d .
           mv libmagiskboot.so magiskboot
           chmod +x magiskboot
           echo "magiskboot extraído correctamente"
 
-      - name: Crear carpeta para artifact
+      # ============================================================
+      # PREPARAR ARTIFACT
+      # ============================================================
+      - name: Preparar artifact
         run: |
           mkdir -p artifact
           cp kernel/out/arch/arm64/boot/Image artifact/ 2>/dev/null || true
           cp kernel/out/arch/arm64/boot/Image.gz artifact/ 2>/dev/null || true
           cp kernel/out/arch/arm64/boot/Image.gz-dtb artifact/ 2>/dev/null || true
           cp magiskboot artifact/ 2>/dev/null || true
-          # También copiamos el script de preparación (opcional)
-          echo "Archivos copiados a artifact/"
+          echo "Contenido de artifact/:"
+          ls -la artifact/
 
-      - name: Subir artifact completo
+      - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
           name: a7y18lte-kernel-bundle
           path: artifact/
-          if-no-files-found: warn
+          if-no-files-found: error   # ← Ahora falla si no hay archivos
