@@ -42,33 +42,26 @@ jobs:
           echo "KBUILD_CFLAGS += -Wno-error=misleading-indentation -Wno-error=uninitialized -Wno-error=unused-variable" >> Makefile
 
       # ============================================================
-      # ELIMINAR -mgeneral-regs-only (si aún existe)
+      # ELIMINAR -mgeneral-regs-only (si existe)
       # ============================================================
       - name: Eliminar -mgeneral-regs-only
         working-directory: kernel
         run: |
           sed -i 's/-mgeneral-regs-only//g' Makefile
-          echo "KBUILD_CFLAGS := $(filter-out -mgeneral-regs-only,$(KBUILD_CFLAGS))" >> Makefile
 
       # ============================================================
-      # PARCHEAR debug-monitors.c (eliminar BUILD_BUG_ON que falla)
+      # FORZAR ALINEACIÓN ESTRICTA PARA ATOMICIDAD
       # ============================================================
-      - name: Parchear debug-monitors.c para evitar errores de atomicidad
+      - name: Forzar alineación estricta
         working-directory: kernel
         run: |
-          # Hacer backup
-          cp arch/arm64/kernel/debug-monitors.c arch/arm64/kernel/debug-monitors.c.bak
-          
-          # Eliminar las líneas que contienen BUILD_BUG_ON que causan el error
-          sed -i '/BUILD_BUG_ON(sizeof(long) != 8)/d' arch/arm64/kernel/debug-monitors.c
-          sed -i '/BUILD_BUG_ON(sizeof(int) != 4)/d' arch/arm64/kernel/debug-monitors.c
-          
-          echo "✅ Parche aplicado a arch/arm64/kernel/debug-monitors.c"
+          echo "KBUILD_CFLAGS += -mstrict-align -fno-strict-aliasing" >> Makefile
+          echo "Se agregó -mstrict-align y -fno-strict-aliasing"
 
       # ============================================================
-      # ACTIVAR SELINUX EN DEFCONFIG
+      # ACTIVAR SELINUX
       # ============================================================
-      - name: Activar SELinux en defconfig
+      - name: Activar SELinux
         working-directory: kernel
         run: |
           echo "CONFIG_SECURITY_SELINUX=y" >> arch/arm64/configs/lineage_a7y18lte_defconfig
