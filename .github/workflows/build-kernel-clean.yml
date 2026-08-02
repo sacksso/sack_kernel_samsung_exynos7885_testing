@@ -1,4 +1,4 @@
-name: Build Kernel - Clean + decon_reg fix + verification
+name: Build Kernel - Clean + decon_reg fix (CFLAGS_REMOVE)
 
 on:
   workflow_dispatch:
@@ -34,13 +34,17 @@ jobs:
             gcc-arm-linux-gnueabi
 
       # ============================================================
-      # APLICAR: quitar -mgeneral-regs-only solo para decon_reg.c
+      # PARCHE: Quitar -mgeneral-regs-only solo en decon_reg.c
+      # Usamos printf para asegurar salto de línea antes y después
       # ============================================================
       - name: Quitar -mgeneral-regs-only solo en decon_reg.c
         working-directory: kernel
         run: |
-          echo "CFLAGS_REMOVE_decon_reg.o := -mgeneral-regs-only" >> drivers/video/fbdev/exynos/dpu_7885/Makefile
-          echo "✅ Parche aplicado a drivers/video/fbdev/exynos/dpu_7885/Makefile"
+          printf '\nCFLAGS_REMOVE_decon_reg.o := -mgeneral-regs-only\n' >> drivers/video/fbdev/exynos/dpu_7885/Makefile
+          echo "--- Contenido final del Makefile del driver ---"
+          cat drivers/video/fbdev/exynos/dpu_7885/Makefile
+          echo "--- Confirmando que la línea quedó sola ---"
+          grep -n "CFLAGS_REMOVE_decon_reg" drivers/video/fbdev/exynos/dpu_7885/Makefile
 
       # ============================================================
       # COMPILACIÓN
@@ -68,7 +72,7 @@ jobs:
           OBJFILE=$(find out -name 'decon_reg.o' | head -1)
           echo "Revisando: $OBJFILE"
           if $OBJDUMP -d "$OBJFILE" | grep -Ei '\b(fmov|fadd|fsub|fmul|fdiv|fcmp|ldr[[:space:]]+q|str[[:space:]]+q|[[:space:]]v[0-9]+\.)\b'; then
-            echo "❌ Se encontraron instrucciones NEON/FP reales en decon_reg.o — NO continuar, hay que investigar más"
+            echo "❌ Se encontraron instrucciones NEON/FP reales en decon_reg.o — NO continuar"
             exit 1
           else
             echo "✅ decon_reg.o no usa NEON/FP real — confirmado que era solo el falso positivo del compilador"
@@ -88,6 +92,9 @@ jobs:
             ls -la out/arch/arm64/boot/Image*
           fi
 
+      # ============================================================
+      # SUBIR ARTIFACT
+      # ============================================================
       - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
