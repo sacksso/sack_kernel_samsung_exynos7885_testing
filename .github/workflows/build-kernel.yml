@@ -42,6 +42,18 @@ jobs:
           echo "KBUILD_CFLAGS += -Wno-error=misleading-indentation -Wno-error=uninitialized -Wno-error=unused-variable" >> Makefile
 
       # ============================================================
+      # ELIMINAR -mgeneral-regs-only GLOBALMENTE
+      # ============================================================
+      - name: Eliminar -mgeneral-regs-only de los CFLAGS
+        working-directory: kernel
+        run: |
+          # Opción 1: Eliminar la bandera del Makefile principal
+          sed -i 's/-mgeneral-regs-only//g' Makefile
+          # Opción 2: Añadir una línea que la remueva explícitamente
+          echo "KBUILD_CFLAGS := $(filter-out -mgeneral-regs-only,$(KBUILD_CFLAGS))" >> Makefile
+          echo "Se eliminó -mgeneral-regs-only de las banderas de compilación"
+
+      # ============================================================
       # ACTIVAR SELINUX EN DEFCONFIG
       # ============================================================
       - name: Activar SELinux en defconfig
@@ -51,15 +63,6 @@ jobs:
           echo "CONFIG_SECURITY_SELINUX_BOOTPARAM=y" >> arch/arm64/configs/lineage_a7y18lte_defconfig
           echo "CONFIG_SECURITY_SELINUX_DISABLE=y" >> arch/arm64/configs/lineage_a7y18lte_defconfig
           echo "CONFIG_DEFAULT_SECURITY_SELINUX=y" >> arch/arm64/configs/lineage_a7y18lte_defconfig
-
-      # ============================================================
-      # CORRECCIÓN PARA decon_reg.c (eliminar -mgeneral-regs-only)
-      # ============================================================
-      - name: Corregir compilación de decon_reg.c
-        working-directory: kernel
-        run: |
-          echo "CFLAGS_REMOVE_decon_reg.o := -mgeneral-regs-only" >> drivers/video/fbdev/exynos/dpu_7885/Makefile
-          echo "Corrección aplicada a drivers/video/fbdev/exynos/dpu_7885/Makefile"
 
       # ============================================================
       # COMPILACIÓN
