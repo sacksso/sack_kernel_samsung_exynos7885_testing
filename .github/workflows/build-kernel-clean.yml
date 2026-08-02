@@ -1,4 +1,4 @@
-name: Build Kernel - Clean + no warnings as errors
+name: Build Kernel - Clean + no warnings as errors + no vectorize
 
 on:
   workflow_dispatch:
@@ -34,7 +34,24 @@ jobs:
             gcc-arm-linux-gnueabi
 
       # ============================================================
-      # COMPILACIÓN con KCFLAGS="-Wno-error" (maestra)
+      # Desactivar firma de módulos (evita error de OpenSSL 3.0 en
+      # Ubuntu 22.04, que eliminó funciones que scripts/sign-file
+      # y scripts/extract-cert necesitan de OpenSSL 1.x)
+      # ============================================================
+      - name: Desactivar firma de módulos (evita error de OpenSSL 3.0)
+        working-directory: kernel
+        run: |
+          sed -i 's/^CONFIG_MODULE_SIG.*=y/# CONFIG_MODULE_SIG is not set/' arch/arm64/configs/lineage_a7y18lte_defconfig
+          sed -i '/CONFIG_MODULE_SIG_FORCE/d;/CONFIG_MODULE_SIG_ALL/d;/CONFIG_MODULE_SIG_SHA/d;/CONFIG_MODULE_SIG_HASH/d;/CONFIG_MODULE_SIG_KEY/d' arch/arm64/configs/lineage_a7y18lte_defconfig
+          echo "✅ CONFIG_MODULE_SIG desactivado en el defconfig"
+
+      # ============================================================
+      # COMPILACIÓN con KCFLAGS (sin modificar el Makefile raíz)
+      #   -Wno-error              -> warnings no detienen el build
+      #   -fno-tree-vectorize     -> evita auto-vectorización NEON
+      #   -fno-tree-slp-vectorize -> evita vectorización SLP (NEON)
+      # Esto mantiene -mgeneral-regs-only intacto en todo el árbol,
+      # incluido decon_reg.c, sin abrir el hueco de FP/NEON en kernel.
       # ============================================================
       - name: Compilar kernel
         working-directory: kernel
@@ -43,7 +60,7 @@ jobs:
           export SUBARCH=arm64
           export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
-          export KCFLAGS="-Wno-error"
+          export KCFLAGS="-Wno-error -fno-tree-vectorize -fno-tree-slp-vectorize"
 
           make O=out lineage_a7y18lte_defconfig
           make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS"
@@ -62,9 +79,33 @@ jobs:
             ls -la out/arch/arm64/boot/Image*
           fi
 
+      # ============================================================
+      # DESCARGAR magiskboot (para empaquetado posterior con AnyKernel3)
+      # ============================================================
+      - name: Descargar magiskboot
+        run: |
+          wget -O magisk.apk https://github.com/topjohnwu/Magisk/releases/download/v30.0/Magisk-v30.0.apk
+          unzip -j magisk.apk lib/arm64-v8a/libmagiskboot.so -d .
+          mv libmagiskboot.so magiskboot
+          chmod +x magiskboot
+          echo "magiskboot extraído correctamente"
+
+      # ============================================================
+      # PREPARAR ARTIFACT
+      # ============================================================
+      - name: Preparar artifact
+        run: |
+          mkdir -p artifact
+          cp kernel/out/arch/arm64/boot/Image artifact/ 2>/dev/null || true
+          cp kernel/out/arch/arm64/boot/Image.gz artifact/ 2>/dev/null || true
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb artifact/ 2>/dev/null || true
+          cp magiskboot artifact/
+          echo "Contenido de artifact/:"
+          ls -la artifact/
+
       - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
           name: a7y18lte-kernel-clean
-          path: kernel/out/arch/arm64/boot/Image*
+          path: artifact/
           if-no-files-found: error
