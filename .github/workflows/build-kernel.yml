@@ -7,7 +7,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 60
-    
+
     steps:
       - name: Checkout del kernel
         uses: actions/checkout@v4
@@ -34,7 +34,7 @@ jobs:
             gcc-arm-linux-gnueabi
 
       # ============================================================
-      # PARCHE 1: decon_clocks_table (double -> unsigned long)
+      # FIX 1: decon_clocks_table (double -> unsigned long)
       # ============================================================
       - name: Corregir decon_clocks_table
         working-directory: kernel
@@ -43,7 +43,7 @@ jobs:
           grep -n "^const unsigned long decon_clocks_table" drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
 
       # ============================================================
-      # PARCHE 2: topology.c (if roto de HMP)
+      # FIX 2: topology.c (HMP if roto)
       # ============================================================
       - name: Corregir topology.c
         working-directory: kernel
@@ -52,7 +52,7 @@ jobs:
           grep -n "strlen(CONFIG_HMP_FAST_CPU_MASK)" arch/arm64/kernel/topology.c
 
       # ============================================================
-      # PARCHE 3: nl80211_vendor.c (country_code sin inicializar)
+      # FIX 3: nl80211_vendor.c (country_code sin inicializar)
       # ============================================================
       - name: Corregir nl80211_vendor.c
         working-directory: kernel
@@ -61,43 +61,25 @@ jobs:
           grep -n "char country_code\[SLSI_COUNTRY_CODE_LEN\]" drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # OVERCLOCK: CPU Big (Cortex-A73) a 2288 MHz
+      # OVERCLOCK CPU (BIG: 2.288 GHz, LITTLE: 1.794 GHz)
       # ============================================================
       - name: Overclock CPU Big a 2288 MHz
         working-directory: kernel
         run: |
-          # Insertar 2288000 en la tabla mif-perf de domain@1 (big)
+          # Insertar 2288000 en la tabla mif-perf de domain@1 (antes de 2184000)
           sed -i '/^[[:space:]]*table = < 2184000 1794000/ i\           2288000 1794000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
-          
-          # Insertar 2288000 en la tabla min-limit (big)
+          # Insertar en min-limit
           sed -i '/^[[:space:]]*table = < 2184000 1586000/ i\           2288000 1586000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
-          
-          # Insertar 2288000 en la tabla max-limit (big)
+          # Insertar en max-limit (misma línea que min-limit, pero como son dos tablas, el sed las modificará ambas)
           sed -i '/^[[:space:]]*table = < 2184000 1586000/ i\           2288000 1586000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
-          
-          echo "✅ Frecuencia 2288000 insertada en las tablas big"
-          grep -n "2288000" arch/arm64/boot/dts/exynos/exynos7885.dtsi || echo "⚠️ No se encontró 2288000 (puede que ya exista)"
+          grep -n "2288000" arch/arm64/boot/dts/exynos/exynos7885.dtsi
 
-      # ============================================================
-      # OVERCLOCK: CPU Little (Cortex-A53) a 1794 MHz
-      # ============================================================
       - name: Overclock CPU Little a 1794 MHz
         working-directory: kernel
         run: |
-          # Insertar 1794000 en la tabla mif-perf de domain@0 (little)
+          # Insertar 1794000 en la tabla mif-perf de domain@0 (antes de 1690000)
           sed -i '/^[[:space:]]*table = < 1690000 1014000/ i\           1794000 1014000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
-          
-          echo "✅ Frecuencia 1794000 insertada en las tablas little"
-          grep -n "1794000" arch/arm64/boot/dts/exynos/exynos7885.dtsi || echo "⚠️ No se encontró 1794000 (puede que ya exista)"
-
-      # ============================================================
-      # (OPCIONAL) Overclock de GPU - Comentado por ahora
-      # ============================================================
-      # - name: Overclock GPU (pendiente de investigación)
-      #   working-directory: kernel
-      #   run: |
-      #     # Aquí irían los sed para modificar la tabla de GPU
-      #     echo "Overclock de GPU no implementado todavía"
+          grep -n "1794000" arch/arm64/boot/dts/exynos/exynos7885.dtsi
 
       # ============================================================
       # COMPILACIÓN
@@ -126,13 +108,57 @@ jobs:
           echo "✅ Image generado correctamente"
 
       # ============================================================
-      # SUBIR ARTEFACTO
+      # EMPAQUETADO ANY KERNEL 3 (ZIP FLASHEABLE)
       # ============================================================
-      - name: Subir artifact
+      - name: Preparar AnyKernel3
+        run: |
+          # Clonar AnyKernel3
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
+          # Copiar el Image compilado
+          cp kernel/out/arch/arm64/boot/Image anykernel/
+          # Configurar anykernel.sh para a7y18lte
+          cat > anykernel/anykernel.sh << 'EOF'
+          # AnyKernel3 Ramdisk Mod Script
+          # osm0sis @ xda-developers
+
+          properties() { '
+          kernel.string=a7y18lte kernel with overclock
+          do.devicecheck=1
+          do.modules=0
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=a7y18lte
+          device.name2=
+          device.name3=
+          device.name4=
+          device.name5=
+          supported.versions=
+          supported.patchlevels=
+          '; }
+
+          block=/dev/block/by-name/BOOT;
+          is_slot_device=0;
+          ramdisk_compression=auto;
+
+          . tools/ak3-core.sh;
+
+          dump_boot;
+          write_boot;
+          EOF
+          # Crear el ZIP
+          cd anykernel
+          zip -r ../AnyKernel3-a7y18lte-overclock.zip . -x "*\.git*" -x "*\.github*"
+          cd ..
+
+      # ============================================================
+      # SUBIR ARTEFACTOS (Image, Image.gz y ZIP)
+      # ============================================================
+      - name: Subir artefactos
         uses: actions/upload-artifact@v4
         with:
-          name: a7y18lte-kernel-bundle-overclock
+          name: a7y18lte-kernel-bundle
           path: |
             kernel/out/arch/arm64/boot/Image
             kernel/out/arch/arm64/boot/Image.gz
+            AnyKernel3-a7y18lte-overclock.zip
           if-no-files-found: error
