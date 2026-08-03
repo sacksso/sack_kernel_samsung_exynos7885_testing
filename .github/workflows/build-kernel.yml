@@ -64,28 +64,23 @@ jobs:
       # simplemente oculta con el clamp original. boot_freq NO se toca,
       # así el teléfono arranca a velocidad normal y solo escala al
       # overclock bajo carga real.
+      #
+      # Usamos perl -0777 en una sola línea (en vez de sed multilínea)
+      # porque las continuaciones "\<salto de línea>" de sed rompen la
+      # indentación que YAML exige dentro de un bloque "run: |".
       # ============================================================
 
       - name: Aplicar overclock en exynos-acme.c (max_freq real)
         working-directory: kernel
         run: |
-          sed -i '/domain->resume_freq = cal_dfs_get_resume_freq(domain->cal_id);/a\
-\tif (domain->id == 0) {\
-\t\tdomain->max_freq = 1690000; /* little: stock 1586000 -> 1690000 */\
-\t} else if (domain->id == 1) {\
-\t\tdomain->max_freq = 2288000; /* big: stock 2184000 -> 2288000 */\
-\t}' drivers/cpufreq/exynos-acme.c
-          grep -n -A4 "domain->resume_freq = cal_dfs_get_resume_freq" drivers/cpufreq/exynos-acme.c
+          perl -0777 -pi -e 's/(domain->resume_freq = cal_dfs_get_resume_freq\(domain->cal_id\);\n)/$1\n\tif (domain->id == 0) {\n\t\tdomain->max_freq = 1690000; \/* little: stock 1586000 -> 1690000 *\/\n\t} else if (domain->id == 1) {\n\t\tdomain->max_freq = 2288000; \/* big: stock 2184000 -> 2288000 *\/\n\t}\n/' drivers/cpufreq/exynos-acme.c
+          grep -n -A6 "domain->resume_freq = cal_dfs_get_resume_freq" drivers/cpufreq/exynos-acme.c
 
       - name: Agregar constraint MIF para los nuevos niveles altos
         working-directory: kernel
         run: |
-          sed -i '/if (freq <= table\[c_index\].master_freq)/i\
-\t\t\tif (freq == 2288000)\
-\t\t\t\tdm->c.freq_table[index].constraint_freq = 1794000;\
-\t\t\tif (freq == 1690000)\
-\t\t\t\tdm->c.freq_table[index].constraint_freq = 1014000;' drivers/cpufreq/exynos-acme.c
-          grep -n -B2 -A2 "freq == 2288000" drivers/cpufreq/exynos-acme.c
+          perl -0777 -pi -e 's/(if \(freq >= table\[c_index\]\.master_freq\)\s*break;\s*\})\s*\}/$1\n\t\tif (freq == 2288000)\n\t\t\tdm->c.freq_table[index].constraint_freq = 1794000;\n\t\tif (freq == 1690000)\n\t\t\tdm->c.freq_table[index].constraint_freq = 1014000;\n\t}\n}/s' drivers/cpufreq/exynos-acme.c
+          grep -n -B4 -A8 "freq == 2288000" drivers/cpufreq/exynos-acme.c
 
       # ============================================================
       # COMPILACIÓN - sin KCFLAGS de supresión. Si algo más rompe acá,
