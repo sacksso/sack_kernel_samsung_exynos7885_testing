@@ -66,19 +66,26 @@ jobs:
       - name: Overclock CPU Big a 2288 MHz
         working-directory: kernel
         run: |
-          # Insertar 2288000 en la tabla mif-perf de domain@1 (antes de 2184000)
-          sed -i '/^[[:space:]]*table = < 2184000 1794000/ i\           2288000 1794000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
-          # Insertar en min-limit
-          sed -i '/^[[:space:]]*table = < 2184000 1586000/ i\           2288000 1586000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
-          # Insertar en max-limit (misma línea que min-limit, pero como son dos tablas, el sed las modificará ambas)
-          sed -i '/^[[:space:]]*table = < 2184000 1586000/ i\           2288000 1586000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
+          # Insertar 2288000 en la tabla mif-perf del domain@1 (antes de 2184000)
+          awk '/^\s*table = < 2184000 1794000/ && !done {print "           2288000 1794000"; done=1} {print}' arch/arm64/boot/dts/exynos/exynos7885.dtsi > arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp
+          mv arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp arch/arm64/boot/dts/exynos/exynos7885.dtsi
+
+          # Insertar en min-limit (primera tabla)
+          awk '/^\s*table = < 2184000 1586000/ && !done2 {print "           2288000 1586000"; done2=1} {print}' arch/arm64/boot/dts/exynos/exynos7885.dtsi > arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp
+          mv arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp arch/arm64/boot/dts/exynos/exynos7885.dtsi
+
+          # Insertar en max-limit (segunda tabla, con el mismo patrón)
+          awk '/^\s*table = < 2184000 1586000/ && !done3 {print "           2288000 1586000"; done3=1} {print}' arch/arm64/boot/dts/exynos/exynos7885.dtsi > arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp
+          mv arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp arch/arm64/boot/dts/exynos/exynos7885.dtsi
+
           grep -n "2288000" arch/arm64/boot/dts/exynos/exynos7885.dtsi
 
       - name: Overclock CPU Little a 1794 MHz
         working-directory: kernel
         run: |
           # Insertar 1794000 en la tabla mif-perf de domain@0 (antes de 1690000)
-          sed -i '/^[[:space:]]*table = < 1690000 1014000/ i\           1794000 1014000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
+          awk '/^\s*table = < 1690000 1014000/ && !done {print "           1794000 1014000"; done=1} {print}' arch/arm64/boot/dts/exynos/exynos7885.dtsi > arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp
+          mv arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp arch/arm64/boot/dts/exynos/exynos7885.dtsi
           grep -n "1794000" arch/arm64/boot/dts/exynos/exynos7885.dtsi
 
       # ============================================================
