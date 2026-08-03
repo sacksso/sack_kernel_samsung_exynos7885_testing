@@ -9,7 +9,8 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Checkout del kernel
+
+      - name: Checkout kernel
         uses: actions/checkout@v4
         with:
           repository: exynos7885-dev/kernel_samsung_exynos7885
@@ -17,7 +18,8 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Checkout toolchain GCC 6.4.1
+
+      - name: Checkout GCC 6.4.1 toolchain
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1
@@ -25,97 +27,191 @@ jobs:
           path: toolchain/aarch64
           fetch-depth: 1
 
-      - name: Instalar dependencias
+
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential bc bison flex libssl-dev \
-            libncurses-dev git-core zip \
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libncurses-dev \
+            git-core \
+            zip \
             gcc-arm-linux-gnueabi
 
-      # ============================================================
-      # PARCHES REALES (arreglan la causa, no solo el warning del
-      # compilador) - los tres confirmados contra el código fuente:
-      # ============================================================
 
-      - name: Corregir decon_clocks_table (double -> unsigned long)
-        working-directory: kernel
-        run: |
-          sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
-          grep -n "^const unsigned long decon_clocks_table" drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
-
-      - name: Corregir topology.c (el 'if' roto de HMP fast/slow cpu mask)
-        working-directory: kernel
-        run: |
-          sed -i 's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' arch/arm64/kernel/topology.c
-          grep -n "strlen(CONFIG_HMP_FAST_CPU_MASK)" arch/arm64/kernel/topology.c
-
-      - name: Corregir nl80211_vendor.c (country_code sin inicializar)
-        working-directory: kernel
-        run: |
-          sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
-          grep -n "char country_code\[SLSI_COUNTRY_CODE_LEN\]" drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # OVERCLOCK - basado en topser9/kernel_samsung_universal7885
-      # (mismo Exynos 7885, confirmado funcional). Sube domain->max_freq
-      # directamente en exynos-acme.c, ya que CAL genera internamente
-      # niveles de frecuencia por encima del máximo stock que Samsung
-      # simplemente oculta con el clamp original. boot_freq NO se toca,
-      # así el teléfono arranca a velocidad normal y solo escala al
-      # overclock bajo carga real.
+      # FIXES DE COMPILACIÓN
+      # ============================================================
+
+
+      - name: Fix decon_clocks_table
+        working-directory: kernel
+        run: |
+
+          sed -i \
+          's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' \
+          drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
+
+
+          grep -n "decon_clocks_table" \
+          drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
+
+
+
+      - name: Fix topology.c warning
+        working-directory: kernel
+        run: |
+
+          sed -i \
+          's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' \
+          arch/arm64/kernel/topology.c
+
+
+          grep -n "CONFIG_HMP_FAST_CPU_MASK" \
+          arch/arm64/kernel/topology.c
+
+
+
+      - name: Fix nl80211 country_code
+        working-directory: kernel
+        run: |
+
+          sed -i \
+          's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' \
+          drivers/net/wireless/scsc/nl80211_vendor.c
+
+
+          grep -n "country_code" \
+          drivers/net/wireless/scsc/nl80211_vendor.c
+
+
+
+
+      # ============================================================
+      # OVERCLOCK EXYNOS 7885
       #
-      # Usamos perl -0777 en una sola línea (en vez de sed multilínea)
-      # porque las continuaciones "\<salto de línea>" de sed rompen la
-      # indentación que YAML exige dentro de un bloque "run: |".
+      # CAL ya contiene niveles superiores.
+      # ACME solamente limita max_freq.
+      #
+      # LITTLE:
+      # 1586000 -> 1690000
+      #
+      # BIG:
+      # 2184000 -> 2288000
+      #
+      # No modifica boot_freq.
       # ============================================================
 
-      - name: Aplicar overclock en exynos-acme.c (max_freq real)
-        working-directory: kernel
-        run: |
-          perl -0777 -pi -e 's/(domain->resume_freq = cal_dfs_get_resume_freq\(domain->cal_id\);\n)/$1\n\tif (domain->id == 0) {\n\t\tdomain->max_freq = 1690000; \/* little: stock 1586000 -> 1690000 *\/\n\t} else if (domain->id == 1) {\n\t\tdomain->max_freq = 2288000; \/* big: stock 2184000 -> 2288000 *\/\n\t}\n/' drivers/cpufreq/exynos-acme.c
-          grep -n -A6 "domain->resume_freq = cal_dfs_get_resume_freq" drivers/cpufreq/exynos-acme.c
 
-      - name: Agregar constraint MIF para los nuevos niveles altos
+      - name: Apply CPU overclock in exynos-acme.c
         working-directory: kernel
         run: |
-          perl -0777 -pi -e 's/(if \(freq >= table\[c_index\]\.master_freq\)\s*break;\s*\})\s*\}/$1\n\t\tif (freq == 2288000)\n\t\t\tdm->c.freq_table[index].constraint_freq = 1794000;\n\t\tif (freq == 1690000)\n\t\t\tdm->c.freq_table[index].constraint_freq = 1014000;\n\t}\n}/s' drivers/cpufreq/exynos-acme.c
-          grep -n -B4 -A8 "freq == 2288000" drivers/cpufreq/exynos-acme.c
+
+          perl -0777 -pi -e '
+          s/(domain->resume_freq = cal_dfs_get_resume_freq\(domain->cal_id\);)/$1\n
+          \tif (domain->id == 0) {\n
+          \t\tdomain->max_freq = 1690000;\n
+          \t\tdomain->min_freq = 208000;\n
+          \t} else if (domain->id == 1) {\n
+          \t\tdomain->max_freq = 2288000;\n
+          \t\tdomain->min_freq = 208000;\n
+          \t}/s
+          ' drivers/cpufreq/exynos-acme.c
+
+
+          grep -n -A12 \
+          "domain->resume_freq = cal_dfs_get_resume_freq" \
+          drivers/cpufreq/exynos-acme.c
+
+
+
+      - name: Apply MIF constraints for overclock frequencies
+        working-directory: kernel
+        run: |
+
+          perl -0777 -pi -e '
+          s/(if \(freq >= table\[c_index\]\.master_freq\)\s*break;)/$1\n
+          \t\tif (freq == 2288000)\n
+          \t\t\tdm->c.freq_table[index].constraint_freq = 1794000;\n
+          \t\tif (freq == 1690000)\n
+          \t\t\tdm->c.freq_table[index].constraint_freq = 1014000;/s
+          ' drivers/cpufreq/exynos-acme.c
+
+
+          grep -n -B3 -A5 \
+          "freq == 2288000" \
+          drivers/cpufreq/exynos-acme.c
+
+
+
 
       # ============================================================
-      # COMPILACIÓN - sin KCFLAGS de supresión. Si algo más rompe acá,
-      # es una señal real que hay que revisar, no tapar.
+      # BUILD
       # ============================================================
 
-      - name: Compilar kernel
+
+      - name: Compile kernel
         working-directory: kernel
         run: |
+
           export ARCH=arm64
           export SUBARCH=arm64
+
           export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
+
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+
+
           make O=out lineage_a7y18lte_defconfig
+
+
           make O=out -j"$(nproc)"
 
+
+
+
       # ============================================================
-      # VERIFICAR SALIDA
+      # CHECK OUTPUT
       # ============================================================
 
-      - name: Verificar salida
+
+      - name: Verify kernel output
         working-directory: kernel
         run: |
-          ls -la out/arch/arm64/boot/Image*
-          if [ ! -f out/arch/arm64/boot/Image ]; then
-            echo "❌ ERROR: No se generó Image"
-            exit 1
-          fi
-          echo "✅ Image generado correctamente"
 
-      - name: Subir artifact
+          ls -lh out/arch/arm64/boot/Image*
+
+
+          if [ ! -f out/arch/arm64/boot/Image ]; then
+
+            echo "ERROR: Image not generated"
+
+            exit 1
+
+          fi
+
+
+          echo "Kernel compiled successfully"
+
+
+
+
+      - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
         with:
+
           name: a7y18lte-kernel-overclock
+
           path: |
+
             kernel/out/arch/arm64/boot/Image
+
             kernel/out/arch/arm64/boot/Image.gz
+
+
           if-no-files-found: error
