@@ -124,7 +124,6 @@ jobs:
             exit 1
           fi
           echo "Modificando $FILE"
-          # Insertar el bloque antes del return 0 de gpu_control_module_init
           sed -i '/^int gpu_control_module_init/,/^return 0;$/ {
             /^return 0;$/ i\
             \t/* Forzar overclock de GPU a 1300 MHz */\
@@ -134,6 +133,48 @@ jobs:
           }' "$FILE"
           echo "Modificación aplicada en $FILE"
           grep -A10 "gpu_control_module_init" "$FILE"
+
+      # ============================================================
+      # OVERCLOCK GPU (MODIFICACIÓN EN gpu_dvfs_handler.c)
+      # ============================================================
+
+      - name: Force GPU max clock in gpu_dvfs_handler.c
+        working-directory: kernel
+        run: |
+          FILE=$(find drivers/gpu/arm -name "gpu_dvfs_handler.c" | head -1)
+          if [ -z "$FILE" ]; then
+            echo "ERROR: No se encontró gpu_dvfs_handler.c"
+            exit 1
+          fi
+          echo "Modificando $FILE"
+          sed -i '/GPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "dvfs handler initialized\\n");/i \
+          \t/* Forzar overclock de GPU a 1300 MHz */\
+          \tplatform->gpu_max_clock = 1300000;\
+          \tplatform->gpu_max_clock_limit = 1300000;\
+          \tGPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "%s: GPU max clock forzado a %d\\n", __func__, platform->gpu_max_clock);' "$FILE"
+          echo "Modificación aplicada en $FILE"
+          grep -A10 "gpu_dvfs_handler_init" "$FILE"
+
+      # ============================================================
+      # OVERCLOCK GPU (MODIFICACIÓN EN mali_kbase_platform.c)
+      # ============================================================
+
+      - name: Force GPU max clock in mali_kbase_platform.c
+        working-directory: kernel
+        run: |
+          FILE=$(find drivers/gpu/arm -name "mali_kbase_platform.c" | head -1)
+          if [ -z "$FILE" ]; then
+            echo "ERROR: No se encontró mali_kbase_platform.c"
+            exit 1
+          fi
+          echo "Modificando $FILE"
+          # Forzar en gpu_context_init después de leer DT
+          sed -i '/core_props->gpu_freq_khz_max = platform->gpu_max_clock \* 1000;/a \
+          \t/* Forzar overclock de GPU a 1300 MHz */\
+          \tplatform->gpu_max_clock = 1300000;\
+          \tplatform->gpu_max_clock_limit = 1300000;' "$FILE"
+          echo "Modificación aplicada en $FILE"
+          grep -A5 "gpu_context_init" "$FILE"
 
       # ============================================================
       # COMPILACIÓN
