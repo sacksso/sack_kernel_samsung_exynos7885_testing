@@ -1,4 +1,4 @@
-name: Build Kernel for a7y18lte (LineageOS 18.1) with Overclock
+name: Build Kernel for a7y18lte (LineageOS 18.1) - Overclock
 
 on:
   workflow_dispatch:
@@ -34,63 +34,64 @@ jobs:
             gcc-arm-linux-gnueabi
 
       # ============================================================
-      # FIX 1: decon_clocks_table (double -> unsigned long)
+      # PARCHES REALES (arreglan la causa, no solo el warning del
+      # compilador) - los tres confirmados contra el código fuente:
       # ============================================================
-      - name: Corregir decon_clocks_table
+
+      - name: Corregir decon_clocks_table (double -> unsigned long)
         working-directory: kernel
         run: |
           sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
           grep -n "^const unsigned long decon_clocks_table" drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
 
-      # ============================================================
-      # FIX 2: topology.c (HMP if roto)
-      # ============================================================
-      - name: Corregir topology.c
+      - name: Corregir topology.c (el 'if' roto de HMP fast/slow cpu mask)
         working-directory: kernel
         run: |
           sed -i 's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' arch/arm64/kernel/topology.c
           grep -n "strlen(CONFIG_HMP_FAST_CPU_MASK)" arch/arm64/kernel/topology.c
 
-      # ============================================================
-      # FIX 3: nl80211_vendor.c (country_code sin inicializar)
-      # ============================================================
-      - name: Corregir nl80211_vendor.c
+      - name: Corregir nl80211_vendor.c (country_code sin inicializar)
         working-directory: kernel
         run: |
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
           grep -n "char country_code\[SLSI_COUNTRY_CODE_LEN\]" drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # OVERCLOCK CPU (BIG: 2.288 GHz, LITTLE: 1.794 GHz)
+      # OVERCLOCK - basado en topser9/kernel_samsung_universal7885
+      # (mismo Exynos 7885, confirmado funcional). Sube domain->max_freq
+      # directamente en exynos-acme.c, ya que CAL genera internamente
+      # niveles de frecuencia por encima del máximo stock que Samsung
+      # simplemente oculta con el clamp original. boot_freq NO se toca,
+      # así el teléfono arranca a velocidad normal y solo escala al
+      # overclock bajo carga real.
       # ============================================================
-      - name: Overclock CPU Big a 2288 MHz
+
+      - name: Aplicar overclock en exynos-acme.c (max_freq real)
         working-directory: kernel
         run: |
-          # Insertar 2288000 en la tabla mif-perf del domain@1 (antes de 2184000)
-          awk '/^\s*table = < 2184000 1794000/ && !done {print "           2288000 1794000"; done=1} {print}' arch/arm64/boot/dts/exynos/exynos7885.dtsi > arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp
-          mv arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp arch/arm64/boot/dts/exynos/exynos7885.dtsi
+          sed -i '/domain->resume_freq = cal_dfs_get_resume_freq(domain->cal_id);/a\
+\tif (domain->id == 0) {\
+\t\tdomain->max_freq = 1690000; /* little: stock 1586000 -> 1690000 */\
+\t} else if (domain->id == 1) {\
+\t\tdomain->max_freq = 2288000; /* big: stock 2184000 -> 2288000 */\
+\t}' drivers/cpufreq/exynos-acme.c
+          grep -n -A4 "domain->resume_freq = cal_dfs_get_resume_freq" drivers/cpufreq/exynos-acme.c
 
-          # Insertar en min-limit (primera tabla)
-          awk '/^\s*table = < 2184000 1586000/ && !done2 {print "           2288000 1586000"; done2=1} {print}' arch/arm64/boot/dts/exynos/exynos7885.dtsi > arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp
-          mv arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp arch/arm64/boot/dts/exynos/exynos7885.dtsi
-
-          # Insertar en max-limit (segunda tabla, con el mismo patrón)
-          awk '/^\s*table = < 2184000 1586000/ && !done3 {print "           2288000 1586000"; done3=1} {print}' arch/arm64/boot/dts/exynos/exynos7885.dtsi > arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp
-          mv arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp arch/arm64/boot/dts/exynos/exynos7885.dtsi
-
-          grep -n "2288000" arch/arm64/boot/dts/exynos/exynos7885.dtsi
-
-      - name: Overclock CPU Little a 1794 MHz
+      - name: Agregar constraint MIF para los nuevos niveles altos
         working-directory: kernel
         run: |
-          # Insertar 1794000 en la tabla mif-perf de domain@0 (antes de 1690000)
-          awk '/^\s*table = < 1690000 1014000/ && !done {print "           1794000 1014000"; done=1} {print}' arch/arm64/boot/dts/exynos/exynos7885.dtsi > arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp
-          mv arch/arm64/boot/dts/exynos/exynos7885.dtsi.tmp arch/arm64/boot/dts/exynos/exynos7885.dtsi
-          grep -n "1794000" arch/arm64/boot/dts/exynos/exynos7885.dtsi
+          sed -i '/if (freq <= table\[c_index\].master_freq)/i\
+\t\t\tif (freq == 2288000)\
+\t\t\t\tdm->c.freq_table[index].constraint_freq = 1794000;\
+\t\t\tif (freq == 1690000)\
+\t\t\t\tdm->c.freq_table[index].constraint_freq = 1014000;' drivers/cpufreq/exynos-acme.c
+          grep -n -B2 -A2 "freq == 2288000" drivers/cpufreq/exynos-acme.c
 
       # ============================================================
-      # COMPILACIÓN
+      # COMPILACIÓN - sin KCFLAGS de supresión. Si algo más rompe acá,
+      # es una señal real que hay que revisar, no tapar.
       # ============================================================
+
       - name: Compilar kernel
         working-directory: kernel
         run: |
@@ -104,6 +105,7 @@ jobs:
       # ============================================================
       # VERIFICAR SALIDA
       # ============================================================
+
       - name: Verificar salida
         working-directory: kernel
         run: |
@@ -114,58 +116,11 @@ jobs:
           fi
           echo "✅ Image generado correctamente"
 
-      # ============================================================
-      # EMPAQUETADO ANY KERNEL 3 (ZIP FLASHEABLE)
-      # ============================================================
-      - name: Preparar AnyKernel3
-        run: |
-          # Clonar AnyKernel3
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
-          # Copiar el Image compilado
-          cp kernel/out/arch/arm64/boot/Image anykernel/
-          # Configurar anykernel.sh para a7y18lte
-          cat > anykernel/anykernel.sh << 'EOF'
-          # AnyKernel3 Ramdisk Mod Script
-          # osm0sis @ xda-developers
-
-          properties() { '
-          kernel.string=a7y18lte kernel with overclock
-          do.devicecheck=1
-          do.modules=0
-          do.cleanup=1
-          do.cleanuponabort=0
-          device.name1=a7y18lte
-          device.name2=
-          device.name3=
-          device.name4=
-          device.name5=
-          supported.versions=
-          supported.patchlevels=
-          '; }
-
-          block=/dev/block/by-name/BOOT;
-          is_slot_device=0;
-          ramdisk_compression=auto;
-
-          . tools/ak3-core.sh;
-
-          dump_boot;
-          write_boot;
-          EOF
-          # Crear el ZIP
-          cd anykernel
-          zip -r ../AnyKernel3-a7y18lte-overclock.zip . -x "*\.git*" -x "*\.github*"
-          cd ..
-
-      # ============================================================
-      # SUBIR ARTEFACTOS (Image, Image.gz y ZIP)
-      # ============================================================
-      - name: Subir artefactos
+      - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a7y18lte-kernel-bundle
+          name: a7y18lte-kernel-overclock
           path: |
             kernel/out/arch/arm64/boot/Image
             kernel/out/arch/arm64/boot/Image.gz
-            AnyKernel3-a7y18lte-overclock.zip
           if-no-files-found: error
