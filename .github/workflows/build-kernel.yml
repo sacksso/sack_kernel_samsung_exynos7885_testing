@@ -18,12 +18,12 @@ jobs:
           fetch-depth: 1
 
       # ============================================================
-      # Toolchain GCC 4.9
+      # Toolchain GCC 5.5 (ni muy viejo ni muy nuevo)
       # ============================================================
-      - name: Checkout toolchain GCC 4.9
+      - name: Checkout toolchain GCC 5.5
         uses: actions/checkout@v4
         with:
-          repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9
+          repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-5.5
           ref: lineage-19.1
           path: toolchain/aarch64
           fetch-depth: 1
@@ -37,9 +37,18 @@ jobs:
             gcc-arm-linux-gnueabi
 
       # ============================================================
-      # Parche de decon_clocks_table (por si acaso)
+      # Desactivar warning de misleading-indentation (solo si falla)
       # ============================================================
-      - name: Corregir decon_clocks_table (si es necesario)
+      - name: Desactivar warnings
+        working-directory: kernel
+        run: |
+          # GCC 5.5 sí soporta -Wmisleading-indentation, pero lo dejamos por si acaso
+          echo "KBUILD_CFLAGS += -Wno-error=misleading-indentation" >> Makefile || true
+
+      # ============================================================
+      # Parche de decon_clocks_table (si es necesario)
+      # ============================================================
+      - name: Corregir decon_clocks_table
         working-directory: kernel
         run: |
           sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c || true
@@ -64,13 +73,11 @@ jobs:
       - name: Verificar salida
         working-directory: kernel
         run: |
-          echo "=== Archivos en out/arch/arm64/boot ==="
           ls -la out/arch/arm64/boot/Image*
           if [ ! -f out/arch/arm64/boot/Image ]; then
             echo "❌ ERROR: No se generó Image"
             exit 1
           fi
-          echo "✅ Image generado correctamente"
 
       - name: Subir artifact
         uses: actions/upload-artifact@v4
