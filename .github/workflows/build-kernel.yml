@@ -1,359 +1,149 @@
-name: Build a7y18lte OC Kernel + AnyKernel3
+name: Build Kernel for a7y18lte (LineageOS 18.1) - Overclock GPU+CPU
 
 on:
   workflow_dispatch:
 
-
 jobs:
-
   build:
-
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
-
+    timeout-minutes: 60
 
     steps:
 
-
-    ##################################################
-    # SOURCE
-    ##################################################
-
-    - name: Checkout kernel source
-      uses: actions/checkout@v4
-      with:
-        repository: sacksso/sack_kernel_samsung_exynos7885_testing
-        ref: main
-        path: kernel
-        fetch-depth: 1
-
-
-
-    ##################################################
-    # TOOLCHAIN
-    ##################################################
-
-    - name: Checkout GCC 6.4.1
-      uses: actions/checkout@v4
-      with:
-        repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1
-        ref: lineage-18.1
-        path: toolchain/aarch64
-        fetch-depth: 1
-
-
-
-    ##################################################
-    # DEPENDENCIES
-    ##################################################
-
-    - name: Install dependencies
-      run: |
-
-        sudo apt update
-
-        sudo apt install -y \
-          bc \
-          bison \
-          flex \
-          build-essential \
-          libssl-dev \
-          libncurses-dev \
-          zip \
-          gcc-arm-linux-gnueabi \
-          device-tree-compiler
-
-
-
-    ##################################################
-    # KERNEL FIXES
-    ##################################################
-
-    - name: Apply compiler fixes
-      working-directory: kernel
-      run: |
-
-
-        sed -i \
-        's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' \
-        drivers/video/fbdev/exynos/dpu_7885/decon_reg.c || true
-
-
-
-        sed -i \
-        's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' \
-        drivers/net/wireless/scsc/nl80211_vendor.c || true
-
-
-
-    ##################################################
-    # CPU OVERCLOCK
-    ##################################################
-
-    - name: Apply CPU overclock
-      working-directory: kernel
-      run: |
-
-
-        perl -0777 -pi -e '
-
-        s/(domain->resume_freq = cal_dfs_get_resume_freq\(domain->cal_id\);)/$1\n
-
-        if(domain->id == 0){
-
-        domain->max_freq = 1690000;
-
-        domain->min_freq = 208000;
-
-        }
-
-        else if(domain->id == 1){
-
-        domain->max_freq = 2288000;
-
-        domain->min_freq = 208000;
-
-        }
-
-        /s
-
-        ' drivers/cpufreq/exynos-acme.c
-
-
-
-    ##################################################
-    # GPU OVERCLOCK
-    ##################################################
-
-    - name: Apply Mali GPU OC
-      working-directory: kernel
-      run: |
-
-
-        sed -i \
-        's/gpu_max_clock = <1100000>;/gpu_max_clock = <1300000>;/' \
-        arch/arm64/boot/dts/exynos/exynos7885-mali.dtsi
-
-
-
-        sed -i \
-        's/gpu_max_clock_limit = <1100000>;/gpu_max_clock_limit = <1300000>;/' \
-        arch/arm64/boot/dts/exynos/exynos7885-mali.dtsi
-
-
-
-    ##################################################
-    # VERIFY DTS
-    ##################################################
-
-    - name: Verify DTS changes
-      working-directory: kernel
-      run: |
-
-
-        echo "GPU settings:"
-
-
-        grep gpu_max_clock \
-        arch/arm64/boot/dts/exynos/exynos7885-mali.dtsi
-
-
-
-        if ! grep -q "1300000" \
-        arch/arm64/boot/dts/exynos/exynos7885-mali.dtsi
-
-        then
-
-          echo "ERROR GPU OC not applied"
-
-          exit 1
-
-        fi
-
-
-
-    ##################################################
-    # BUILD
-    ##################################################
-
-    - name: Compile kernel
-      working-directory: kernel
-      run: |
-
-
-        export ARCH=arm64
-
-        export SUBARCH=arm64
-
-
-        export CROSS_COMPILE=$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-
-
-
-        export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-
-
-
-        make O=out lineage_a7y18lte_defconfig
-
-
-        make O=out -j$(nproc)
-
-
-
-    ##################################################
-    # VERIFY IMAGE
-    ##################################################
-
-    - name: Verify kernel output
-      working-directory: kernel
-      run: |
-
-
-        ls -lh out/arch/arm64/boot/
-
-
-
-        if [ ! -f out/arch/arm64/boot/Image ]
-
-        then
-
-          echo "ERROR Image missing"
-
-          exit 1
-
-        fi
-
-
-        echo "Kernel Image OK"
-
-
-
-    ##################################################
-    # VERIFY FINAL DTB DATA
-    ##################################################
-
-    - name: Verify final kernel OC strings
-      working-directory: kernel
-      run: |
-
-
-        echo "Checking GPU OC in final Image"
-
-
-        strings out/arch/arm64/boot/Image | grep 1300000 || true
-
-
-
-        echo "Checking CPU OC"
-
-
-        strings out/arch/arm64/boot/Image | grep 2288000 || true
-
-
-        strings out/arch/arm64/boot/Image | grep 1690000 || true
-
-
-
-        echo "Final verification complete"
-
-
-
-    ##################################################
-    # ANYKERNEL3
-    ##################################################
-
-    - name: Clone AnyKernel3
-      run: |
-
-
-        git clone \
-        --depth=1 \
-        https://github.com/sacksso/AnyKernel3-a7y18lte.git \
-        anykernel
-
-
-
-    - name: Copy Image
-      run: |
-
-
-        cp \
-        kernel/out/arch/arm64/boot/Image \
-        anykernel/Image
-
-
-
-    ##################################################
-    # BUILD INFO
-    ##################################################
-
-    - name: Add build info
-      run: |
-
-
-        cat > anykernel/build-info.txt <<EOF
-
-Samsung Galaxy A7 2018
-
-Device:
-a7y18lte
-
-
-Kernel:
-4.4.302
-
-
-CPU OC:
-
-BIG:
-2288000
-
-
-LITTLE:
-1690000
-
-
-GPU:
-
-Mali-G71 MP2
-
-1300000
-
-
-Build:
-$(date)
-
-EOF
-
-
-
-    ##################################################
-    # ZIP
-    ##################################################
-
-    - name: Create flashable ZIP
-      run: |
-
-
-        cd anykernel
-
-
-        zip -r9 \
-        ../a7y18lte-OC-Kernel.zip \
-        . \
-        -x ".git/*"
-
-
-
-    ##################################################
-    # ARTIFACT
-    ##################################################
-
-    - name: Upload ZIP
-      uses: actions/upload-artifact@v4
-
-      with:
-
-        name: a7y18lte-OC-Kernel
-
-        path: a7y18lte-OC-Kernel.zip
+      - name: Checkout kernel
+        uses: actions/checkout@v4
+        with:
+          repository: exynos7885-dev/kernel_samsung_exynos7885
+          ref: lineage-18.1
+          path: kernel
+          fetch-depth: 1
+
+      - name: Checkout GCC 6.4.1 toolchain
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1
+          ref: lineage-18.1
+          path: toolchain/aarch64
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libncurses-dev \
+            git-core \
+            zip \
+            gcc-arm-linux-gnueabi
+
+      # ============================================================
+      # FIXES DE COMPILACIÓN
+      # ============================================================
+
+      - name: Fix decon_clocks_table
+        working-directory: kernel
+        run: |
+          sed -i \
+          's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' \
+          drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
+
+      - name: Fix topology.c warning
+        working-directory: kernel
+        run: |
+          sed -i \
+          's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' \
+          arch/arm64/kernel/topology.c
+
+      - name: Fix nl80211 country_code
+        working-directory: kernel
+        run: |
+          sed -i \
+          's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' \
+          drivers/net/wireless/scsc/nl80211_vendor.c
+
+      # ============================================================
+      # OVERCLOCK CPU (EXYNOS 7885)
+      # ============================================================
+
+      - name: Apply CPU overclock in exynos-acme.c
+        working-directory: kernel
+        run: |
+          perl -0777 -pi -e '
+          s/(domain->resume_freq = cal_dfs_get_resume_freq\(domain->cal_id\);)/$1\n
+          \tif (domain->id == 0) {\n
+          \t\tdomain->max_freq = 1690000;\n
+          \t\tdomain->min_freq = 208000;\n
+          \t} else if (domain->id == 1) {\n
+          \t\tdomain->max_freq = 2288000;\n
+          \t\tdomain->min_freq = 208000;\n
+          \t}/s
+          ' drivers/cpufreq/exynos-acme.c
+
+      - name: Apply MIF constraints for overclock frequencies
+        working-directory: kernel
+        run: |
+          perl -0777 -pi -e '
+          s/(if \(freq >= table\[c_index\]\.master_freq\)\s*break;)/$1\n
+          \t\tif (freq == 2288000)\n
+          \t\t\tdm->c.freq_table[index].constraint_freq = 1794000;\n
+          \t\tif (freq == 1690000)\n
+          \t\t\tdm->c.freq_table[index].constraint_freq = 1014000;/s
+          ' drivers/cpufreq/exynos-acme.c
+
+      # ============================================================
+      # OVERCLOCK GPU (MALI-G71 MP2)
+      # ============================================================
+
+      - name: Apply GPU overclock in exynos7885-mali.dtsi
+        working-directory: kernel
+        run: |
+          sed -i \
+            's/gpu_max_clock = <1100000>;/gpu_max_clock = <1300000>;/' \
+            arch/arm64/boot/dts/exynos/exynos7885-mali.dtsi
+          sed -i \
+            's/gpu_max_clock_limit = <1100000>;/gpu_max_clock_limit = <1300000>;/' \
+            arch/arm64/boot/dts/exynos/exynos7885-mali.dtsi
+          echo "GPU max clock cambiado a 1300000"
+          grep -n "gpu_max_clock" \
+            arch/arm64/boot/dts/exynos/exynos7885-mali.dtsi
+
+      # ============================================================
+      # COMPILACIÓN
+      # ============================================================
+
+      - name: Compile kernel
+        working-directory: kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
+          export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+          make O=out lineage_a7y18lte_defconfig
+          make O=out -j"$(nproc)"
+
+      # ============================================================
+      # VERIFICACIÓN DE SALIDA
+      # ============================================================
+
+      - name: Verify kernel output
+        working-directory: kernel
+        run: |
+          ls -lh out/arch/arm64/boot/Image*
+          if [ ! -f out/arch/arm64/boot/Image ]; then
+            echo "ERROR: Image not generated"
+            exit 1
+          fi
+          echo "Kernel compiled successfully"
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7y18lte-kernel-overclock
+          path: |
+            kernel/out/arch/arm64/boot/Image
+            kernel/out/arch/arm64/boot/Image.gz
+          if-no-files-found: error
