@@ -17,10 +17,13 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Checkout toolchain GCC (aarch64)
+      # ============================================================
+      # Toolchain GCC 4.9 (el que usa la comunidad para este kernel)
+      # ============================================================
+      - name: Checkout toolchain GCC 4.9
         uses: actions/checkout@v4
         with:
-          repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1
+          repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-4.9
           ref: lineage-18.1
           path: toolchain/aarch64
           fetch-depth: 1
@@ -33,40 +36,19 @@ jobs:
             libncurses-dev git-core zip \
             gcc-arm-linux-gnueabi
 
-      - name: Desactivar warnings como errores
+      # ============================================================
+      # Parche de decon_clocks_table (solo por si acaso)
+      # ============================================================
+      - name: Corregir decon_clocks_table (opcional)
         working-directory: kernel
         run: |
-          echo "KBUILD_CFLAGS += -Wno-error=misleading-indentation -Wno-error=uninitialized -Wno-error=unused-variable" >> Makefile
-
-      - name: Eliminar -mgeneral-regs-only (si existe)
-        working-directory: kernel
-        run: |
-          sed -i 's/-mgeneral-regs-only//g' Makefile
+          sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c || true
+          echo "✅ Parche aplicado (si era necesario)"
 
       # ============================================================
-      # CORRECCIÓN: Cambiar double -> unsigned long en decon_reg.c
+      # COMPILACIÓN
       # ============================================================
-      - name: Corregir tipo de decon_clocks_table (double -> unsigned long)
-        working-directory: kernel
-        run: |
-          sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
-          echo "✅ Parche aplicado: decon_clocks_table ahora es unsigned long"
-
-      # ============================================================
-      # ACTIVAR SELINUX EN DEFCONFIG
-      # ============================================================
-      - name: Activar SELinux en defconfig
-        working-directory: kernel
-        run: |
-          echo "CONFIG_SECURITY_SELINUX=y" >> arch/arm64/configs/lineage_a7y18lte_defconfig
-          echo "CONFIG_SECURITY_SELINUX_BOOTPARAM=y" >> arch/arm64/configs/lineage_a7y18lte_defconfig
-          echo "CONFIG_SECURITY_SELINUX_DISABLE=y" >> arch/arm64/configs/lineage_a7y18lte_defconfig
-          echo "CONFIG_DEFAULT_SECURITY_SELINUX=y" >> arch/arm64/configs/lineage_a7y18lte_defconfig
-
-      # ============================================================
-      # COMPILACIÓN DEL KERNEL + GENERACIÓN DE Image.gz-dtb
-      # ============================================================
-      - name: Compilar kernel y generar Image.gz-dtb
+      - name: Compilar kernel
         working-directory: kernel
         run: |
           export ARCH=arm64
@@ -77,72 +59,20 @@ jobs:
           make O=out lineage_a7y18lte_defconfig
           make O=out -j"$(nproc)"
 
-          # ============================================================
-          # INTENTAR GENERAR Image.gz-dtb
-          # ============================================================
-
-          echo "=== Intentando generar Image.gz-dtb ==="
-
-          # Método 1: Target estándar de AOSP (más común)
-          make O=out Image.gz-dtb -j"$(nproc)" 2>/dev/null || echo "Método 1 falló"
-
-          # Método 2: Si el target falló, usar mkdtimg
-          if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "Método 1 falló, intentando con mkdtimg..."
-            
-            # Compilar los DTBs individuales
-            make O=out dtbs -j"$(nproc)"
-            
-            # Crear dtb.img con mkdtimg (si existe)
-            if command -v mkdtimg &> /dev/null; then
-              mkdtimg -o out/arch/arm64/boot/dtb.img out/arch/arm64/boot/dts/exynos/ 2>/dev/null || true
-            else
-              # Si no existe mkdtimg, concatenar manualmente los dtbs
-              echo "mkdtimg no encontrado, concatenando DTBs..."
-              find out/arch/arm64/boot/dts -name "*.dtb" -exec cat {} + > out/arch/arm64/boot/dtb.img
-            fi
-
-            # Combinar Image.gz con dtb.img para crear Image.gz-dtb
-            if [ -f out/arch/arm64/boot/Image.gz ] && [ -f out/arch/arm64/boot/dtb.img ]; then
-              cat out/arch/arm64/boot/Image.gz out/arch/arm64/boot/dtb.img > out/arch/arm64/boot/Image.gz-dtb
-              echo "✅ Image.gz-dtb creado mediante concatenación"
-            fi
-          fi
-
-          # Método 3: Verificar si el Image ya contiene el DTB incrustado
-          if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "Método 2 falló, verificando si Image ya tiene el DTB..."
-            if [ -f out/arch/arm64/boot/Image ]; then
-              if grep -q "d00dfeed" out/arch/arm64/boot/Image 2>/dev/null; then
-                cp out/arch/arm64/boot/Image out/arch/arm64/boot/Image.gz-dtb
-                echo "✅ Image ya contenía el DTB, copiado como Image.gz-dtb"
-              fi
-            fi
-          fi
-
-          # Mostrar archivos generados
-          echo "=== Archivos en out/arch/arm64/boot ==="
-          ls -la out/arch/arm64/boot/ | grep -E "Image|dtb"
-
       # ============================================================
-      # VERIFICACIÓN: ¿Existe Image.gz-dtb?
+      # VERIFICACIÓN: ¿Existe el Image plano?
       # ============================================================
-      - name: Verificar Image.gz-dtb
+      - name: Verificar salida
         working-directory: kernel
         run: |
-          if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "⚠️  ERROR: No se generó Image.gz-dtb. Intentando con Image.gz..."
-            if [ -f out/arch/arm64/boot/Image.gz ]; then
-              echo "Se usará Image.gz como alternativa (puede que no bootee correctamente)"
-              ls -la out/arch/arm64/boot/Image*
-              exit 0
-            else
-              echo "❌ No se encontró ningún archivo de kernel"
-              exit 1
-            fi
+          echo "=== Archivos en out/arch/arm64/boot ==="
+          ls -la out/arch/arm64/boot/Image* 2>/dev/null || true
+          if [ ! -f out/arch/arm64/boot/Image ]; then
+            echo "❌ ERROR: No se generó el archivo Image"
+            exit 1
           else
-            echo "✅ Image.gz-dtb encontrado correctamente"
-            ls -la out/arch/arm64/boot/Image*
+            echo "✅ Image generado correctamente"
+            file out/arch/arm64/boot/Image
           fi
 
       # ============================================================
@@ -154,18 +84,18 @@ jobs:
           unzip -j magisk.apk lib/arm64-v8a/libmagiskboot.so -d .
           mv libmagiskboot.so magiskboot
           chmod +x magiskboot
-          echo "magiskboot extraído correctamente"
+          echo "✅ magiskboot extraído"
 
       # ============================================================
-      # PREPARAR ARTIFACT
+      # PREPARAR ARTIFACT (incluye Image plano y magiskboot)
       # ============================================================
       - name: Preparar artifact
         run: |
           mkdir -p artifact
-          cp kernel/out/arch/arm64/boot/Image artifact/ 2>/dev/null || true
+          cp kernel/out/arch/arm64/boot/Image artifact/
           cp kernel/out/arch/arm64/boot/Image.gz artifact/ 2>/dev/null || true
           cp kernel/out/arch/arm64/boot/Image.gz-dtb artifact/ 2>/dev/null || true
-          cp magiskboot artifact/ 2>/dev/null || true
+          cp magiskboot artifact/
           echo "Contenido de artifact/:"
           ls -la artifact/
 
