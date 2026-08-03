@@ -10,10 +10,6 @@ jobs:
 
     steps:
 
-      # ============================================================
-      # 1. CHECKOUT DEL KERNEL Y TOOLCHAIN
-      # ============================================================
-
       - name: Checkout kernel
         uses: actions/checkout@v4
         with:
@@ -45,7 +41,7 @@ jobs:
             gcc-arm-linux-gnueabi
 
       # ============================================================
-      # 2. FIXES DE COMPILACIÓN
+      # FIXES DE COMPILACIÓN
       # ============================================================
 
       - name: Fix decon_clocks_table
@@ -70,7 +66,7 @@ jobs:
           drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # 3. OVERCLOCK CPU
+      # OVERCLOCK CPU
       # ============================================================
 
       - name: Apply CPU overclock in exynos-acme.c
@@ -99,7 +95,7 @@ jobs:
           ' drivers/cpufreq/exynos-acme.c
 
       # ============================================================
-      # 4. OVERCLOCK GPU (MALI-G71 MP2)
+      # OVERCLOCK GPU (MODIFICACIÓN EN DEVICE TREE)
       # ============================================================
 
       - name: Apply GPU overclock in exynos7885-mali.dtsi
@@ -116,7 +112,29 @@ jobs:
             arch/arm64/boot/dts/exynos/exynos7885-mali.dtsi
 
       # ============================================================
-      # 5. COMPILACIÓN DEL KERNEL
+      # OVERCLOCK GPU (MODIFICACIÓN DIRECTA DEL DRIVER MALI)
+      # ============================================================
+
+      - name: Force GPU max clock in mali driver
+        working-directory: kernel
+        run: |
+          # Buscar archivos del driver Mali y forzar gpu_max_clock
+          find drivers/gpu/arm -name "*.c" -exec grep -l "gpu_max_clock" {} \; | while read file; do
+            echo "Modificando $file"
+            sed -i 's/gpu_max_clock[[:space:]]*=[[:space:]]*[0-9]\+;/gpu_max_clock = 1300000;/g' "$file"
+            sed -i 's/gpu_max_clock_limit[[:space:]]*=[[:space:]]*[0-9]\+;/gpu_max_clock_limit = 1300000;/g' "$file"
+          done
+          # Asegurar que la tabla DVFS incluya 1300000
+          find drivers/gpu/arm -name "*.c" -exec grep -l "gpu_dvfs_table" {} \; | while read file; do
+            echo "Verificando tabla DVFS en $file"
+            if ! grep -q "1300000" "$file"; then
+              sed -i '/gpu_dvfs_table/s/{ *[0-9]*, *[0-9]* *, *[0-9]* *, *[0-9]* *, *[0-9]* *, *[0-9]* *, *[0-9]* *};/{1300000, 98, 100, 1, 1794000, 1586000, 0}, \0/g' "$file"
+            fi
+          done
+          echo "Driver Mali modificado para forzar 1300000 MHz"
+
+      # ============================================================
+      # COMPILACIÓN
       # ============================================================
 
       - name: Compile kernel
@@ -130,7 +148,7 @@ jobs:
           make O=out -j"$(nproc)"
 
       # ============================================================
-      # 6. VERIFICACIÓN DEL KERNEL COMPILADO
+      # VERIFICACIÓN DE SALIDA
       # ============================================================
 
       - name: Verify kernel output
@@ -144,7 +162,7 @@ jobs:
           echo "Kernel compiled successfully"
 
       # ============================================================
-      # 7. CLONAR ANYKERNEL3
+      # CLONAR ANYKERNEL3
       # ============================================================
 
       - name: Checkout AnyKernel3
@@ -155,7 +173,7 @@ jobs:
           fetch-depth: 1
 
       # ============================================================
-      # 8. COPIAR IMAGEN DEL KERNEL
+      # COPIAR IMAGEN DEL KERNEL
       # ============================================================
 
       - name: Copy Image to AnyKernel3
@@ -165,7 +183,7 @@ jobs:
           ls -lh anykernel3/Image
 
       # ============================================================
-      # 9. GENERAR build-info.txt
+      # GENERAR build-info.txt
       # ============================================================
 
       - name: Create build-info.txt
@@ -197,18 +215,19 @@ jobs:
           cat anykernel3/build-info.txt
 
       # ============================================================
-      # 10. EMPAQUETADO DEL ZIP
+      # EMPAQUETADO DEL ZIP
       # ============================================================
 
       - name: Create flashable ZIP
-        working-directory: anykernel3
         run: |
+          cd anykernel3
           zip -r9 ../a7y18lte-OC-Kernel.zip . -x "*.git*"
+          cd ..
           echo "ZIP creado correctamente"
-          ls -lh ../a7y18lte-OC-Kernel.zip
+          ls -lh a7y18lte-OC-Kernel.zip
 
       # ============================================================
-      # 11. SUBIR ARTIFACTO (ZIP FINAL)
+      # SUBIR EL ZIP COMO ARTIFACTO
       # ============================================================
 
       - name: Upload final ZIP artifact
