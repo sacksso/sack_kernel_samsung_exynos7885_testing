@@ -18,7 +18,7 @@ jobs:
           fetch-depth: 1
 
       # ============================================================
-      # Toolchain GCC 4.9 (CORREGIDO)
+      # Toolchain GCC 4.9
       # ============================================================
       - name: Checkout toolchain GCC 4.9
         uses: actions/checkout@v4
@@ -35,14 +35,6 @@ jobs:
             build-essential bc bison flex libssl-dev \
             libncurses-dev git-core zip \
             gcc-arm-linux-gnueabi
-
-      # ============================================================
-      # Desactivar warnings (opcional con GCC 4.9)
-      # ============================================================
-      - name: Desactivar warnings no críticos
-        working-directory: kernel
-        run: |
-          echo "KBUILD_CFLAGS += -Wno-error=misleading-indentation" >> Makefile || true
 
       # ============================================================
       # Parche de decon_clocks_table (por si acaso)
@@ -72,11 +64,13 @@ jobs:
       - name: Verificar salida
         working-directory: kernel
         run: |
+          echo "=== Archivos en out/arch/arm64/boot ==="
           ls -la out/arch/arm64/boot/Image*
           if [ ! -f out/arch/arm64/boot/Image ]; then
             echo "❌ ERROR: No se generó Image"
             exit 1
           fi
+          echo "✅ Image generado correctamente"
 
       - name: Subir artifact
         uses: actions/upload-artifact@v4
