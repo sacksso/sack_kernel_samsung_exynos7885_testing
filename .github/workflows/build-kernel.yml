@@ -34,15 +34,31 @@ jobs:
             gcc-arm-linux-gnueabi
 
       # ============================================================
-      # PARCHE SEGURO: decon_clocks_table (double -> unsigned long)
+      # PARCHES REALES (arreglan la causa, no solo el warning del
+      # compilador) - los tres confirmados contra el código fuente:
       # ============================================================
-      - name: Corregir decon_clocks_table
+
+      - name: Corregir decon_clocks_table (double -> unsigned long)
         working-directory: kernel
         run: |
           sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
+          grep -n "^const unsigned long decon_clocks_table" drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
+
+      - name: Corregir topology.c (el 'if' roto de HMP fast/slow cpu mask)
+        working-directory: kernel
+        run: |
+          sed -i 's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' arch/arm64/kernel/topology.c
+          grep -n "strlen(CONFIG_HMP_FAST_CPU_MASK)" arch/arm64/kernel/topology.c
+
+      - name: Corregir nl80211_vendor.c (country_code sin inicializar)
+        working-directory: kernel
+        run: |
+          sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
+          grep -n "char country_code\[SLSI_COUNTRY_CODE_LEN\]" drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # COMPILACIÓN (con KCFLAGS específicos)
+      # COMPILACIÓN - sin KCFLAGS de supresión. Si algo más rompe acá,
+      # es una señal real que hay que revisar, no tapar.
       # ============================================================
       - name: Compilar kernel
         working-directory: kernel
@@ -51,10 +67,9 @@ jobs:
           export SUBARCH=arm64
           export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
-          export KCFLAGS="-Wno-error=misleading-indentation -Wno-error=uninitialized"
 
           make O=out lineage_a7y18lte_defconfig
-          make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS"
+          make O=out -j"$(nproc)"
 
       # ============================================================
       # VERIFICAR SALIDA
