@@ -18,13 +18,13 @@ jobs:
           fetch-depth: 1
 
       # ============================================================
-      # Toolchain GCC 4.9 (el que usa la comunidad para este kernel)
+      # Toolchain GCC 4.9 desde AOSP (en lugar de LineageOS)
       # ============================================================
-      - name: Checkout toolchain GCC 4.9
+      - name: Checkout toolchain GCC 4.9 (AOSP)
         uses: actions/checkout@v4
         with:
-          repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-4.9
-          ref: lineage-18.1
+          repository: android/prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-4.9
+          ref: master
           path: toolchain/aarch64
           fetch-depth: 1
 
@@ -37,13 +37,15 @@ jobs:
             gcc-arm-linux-gnueabi
 
       # ============================================================
-      # Parche de decon_clocks_table (solo por si acaso)
+      # Parches (si son necesarios con GCC 4.9)
       # ============================================================
-      - name: Corregir decon_clocks_table (opcional)
+      - name: Aplicar parches
         working-directory: kernel
         run: |
+          # Desactivar warnings que pueden molestar
+          echo "KBUILD_CFLAGS += -Wno-error=misleading-indentation" >> Makefile || true
+          # Corregir decon_clocks_table (puede que no sea necesario con GCC 4.9, pero no daña)
           sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c || true
-          echo "✅ Parche aplicado (si era necesario)"
 
       # ============================================================
       # COMPILACIÓN
@@ -60,48 +62,91 @@ jobs:
           make O=out -j"$(nproc)"
 
       # ============================================================
-      # VERIFICACIÓN: ¿Existe el Image plano?
+      # VERIFICAR ARCHIVOS
       # ============================================================
-      - name: Verificar salida
+      - name: Verificar archivos generados
         working-directory: kernel
         run: |
           echo "=== Archivos en out/arch/arm64/boot ==="
-          ls -la out/arch/arm64/boot/Image* 2>/dev/null || true
+          ls -la out/arch/arm64/boot/Image* out/arch/arm64/boot/*.img 2>/dev/null || true
           if [ ! -f out/arch/arm64/boot/Image ]; then
-            echo "❌ ERROR: No se generó el archivo Image"
+            echo "❌ ERROR: No se generó Image (kernel sin comprimir)"
             exit 1
-          else
-            echo "✅ Image generado correctamente"
-            file out/arch/arm64/boot/Image
           fi
+          echo "✅ Image generado correctamente"
 
       # ============================================================
-      # DESCARGAR magiskboot (para empaquetado posterior)
+      # EMPAQUETAR AnyKernel3
       # ============================================================
-      - name: Descargar magiskboot
+      - name: Crear zip de AnyKernel3
         run: |
-          wget -O magisk.apk https://github.com/topjohnwu/Magisk/releases/download/v30.0/Magisk-v30.0.apk
-          unzip -j magisk.apk lib/arm64-v8a/libmagiskboot.so -d .
-          mv libmagiskboot.so magiskboot
-          chmod +x magiskboot
-          echo "✅ magiskboot extraído"
+          # Crear estructura de AnyKernel3
+          mkdir -p anykernel/META-INF/com/google/android
+          mkdir -p anykernel/tools
+
+          # Descargar archivos de AnyKernel3
+          wget -O anykernel/tools/ak3-core.sh https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/tools/ak3-core.sh
+          wget -O anykernel/META-INF/com/google/android/update-binary https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/META-INF/com/google/android/update-binary
+
+          # Crear updater-script
+          cat > anykernel/META-INF/com/google/android/updater-script << 'EOF'
+          ui_print("Installing Custom Kernel for Samsung A7 2018 (a7y18lte)");
+          package_extract_file("anykernel.sh", "/tmp/anykernel.sh");
+          set_perm(0, 0, 0777, "/tmp/anykernel.sh");
+          run_program("/tmp/anykernel.sh");
+          EOF
+
+          # Crear anykernel.sh
+          cat > anykernel/anykernel.sh << 'EOF'
+          # AnyKernel3 Ramdisk Mod Script
+          # osm0sis @ xda-developers
+
+          ## AnyKernel setup
+          # begin properties
+          properties() { '
+          kernel.string=Custom Kernel for Samsung A7 2018 (a7y18lte)
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          supported.versions=
+          '; } # end properties
+
+          # shell variables
+          block=/dev/block/by-name/BOOT;
+          is_slot_device=0;
+          ramdisk_compression=auto;
+
+          ## AnyKernel methods (DO NOT CHANGE)
+          . tools/ak3-core.sh;
+
+          ## AnyKernel install
+          # begin ramdisk changes
+          # end ramdisk changes
+
+          ## AnyKernel boot install
+          split_boot;
+          flash_boot;
+          ## end install
+          EOF
+
+          # Copiar el kernel sin comprimir (Image)
+          cp kernel/out/arch/arm64/boot/Image anykernel/
+
+          # Crear el zip
+          cd anykernel
+          zip -r9 ../CustomKernel_a7y18lte.zip * -x "*.git*"
+          cd ..
+
+          echo "✅ Zip creado: CustomKernel_a7y18lte.zip"
 
       # ============================================================
-      # PREPARAR ARTIFACT (incluye Image plano y magiskboot)
+      # SUBIR ARTIFACT (zip de AnyKernel3)
       # ============================================================
-      - name: Preparar artifact
-        run: |
-          mkdir -p artifact
-          cp kernel/out/arch/arm64/boot/Image artifact/
-          cp kernel/out/arch/arm64/boot/Image.gz artifact/ 2>/dev/null || true
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb artifact/ 2>/dev/null || true
-          cp magiskboot artifact/
-          echo "Contenido de artifact/:"
-          ls -la artifact/
-
       - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a7y18lte-kernel-bundle
-          path: artifact/
+          name: a7y18lte-kernel-anykernel
+          path: CustomKernel_a7y18lte.zip
           if-no-files-found: error
