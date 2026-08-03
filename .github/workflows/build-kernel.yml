@@ -18,13 +18,13 @@ jobs:
           fetch-depth: 1
 
       # ============================================================
-      # Toolchain GCC 4.9 desde AOSP (en lugar de LineageOS)
+      # Toolchain GCC 4.9 (CORREGIDO)
       # ============================================================
-      - name: Checkout toolchain GCC 4.9 (AOSP)
+      - name: Checkout toolchain GCC 4.9
         uses: actions/checkout@v4
         with:
-          repository: android/prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-4.9
-          ref: master
+          repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9
+          ref: lineage-19.1
           path: toolchain/aarch64
           fetch-depth: 1
 
@@ -37,14 +37,19 @@ jobs:
             gcc-arm-linux-gnueabi
 
       # ============================================================
-      # Parches (si son necesarios con GCC 4.9)
+      # Desactivar warnings (opcional con GCC 4.9)
       # ============================================================
-      - name: Aplicar parches
+      - name: Desactivar warnings no críticos
         working-directory: kernel
         run: |
-          # Desactivar warnings que pueden molestar
           echo "KBUILD_CFLAGS += -Wno-error=misleading-indentation" >> Makefile || true
-          # Corregir decon_clocks_table (puede que no sea necesario con GCC 4.9, pero no daña)
+
+      # ============================================================
+      # Parche de decon_clocks_table (por si acaso)
+      # ============================================================
+      - name: Corregir decon_clocks_table (si es necesario)
+        working-directory: kernel
+        run: |
           sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c || true
 
       # ============================================================
@@ -55,98 +60,27 @@ jobs:
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
-          export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
+          export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-android-"
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
 
           make O=out lineage_a7y18lte_defconfig
           make O=out -j"$(nproc)"
 
       # ============================================================
-      # VERIFICAR ARCHIVOS
+      # VERIFICACIÓN
       # ============================================================
-      - name: Verificar archivos generados
+      - name: Verificar salida
         working-directory: kernel
         run: |
-          echo "=== Archivos en out/arch/arm64/boot ==="
-          ls -la out/arch/arm64/boot/Image* out/arch/arm64/boot/*.img 2>/dev/null || true
+          ls -la out/arch/arm64/boot/Image*
           if [ ! -f out/arch/arm64/boot/Image ]; then
-            echo "❌ ERROR: No se generó Image (kernel sin comprimir)"
+            echo "❌ ERROR: No se generó Image"
             exit 1
           fi
-          echo "✅ Image generado correctamente"
 
-      # ============================================================
-      # EMPAQUETAR AnyKernel3
-      # ============================================================
-      - name: Crear zip de AnyKernel3
-        run: |
-          # Crear estructura de AnyKernel3
-          mkdir -p anykernel/META-INF/com/google/android
-          mkdir -p anykernel/tools
-
-          # Descargar archivos de AnyKernel3
-          wget -O anykernel/tools/ak3-core.sh https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/tools/ak3-core.sh
-          wget -O anykernel/META-INF/com/google/android/update-binary https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/META-INF/com/google/android/update-binary
-
-          # Crear updater-script
-          cat > anykernel/META-INF/com/google/android/updater-script << 'EOF'
-          ui_print("Installing Custom Kernel for Samsung A7 2018 (a7y18lte)");
-          package_extract_file("anykernel.sh", "/tmp/anykernel.sh");
-          set_perm(0, 0, 0777, "/tmp/anykernel.sh");
-          run_program("/tmp/anykernel.sh");
-          EOF
-
-          # Crear anykernel.sh
-          cat > anykernel/anykernel.sh << 'EOF'
-          # AnyKernel3 Ramdisk Mod Script
-          # osm0sis @ xda-developers
-
-          ## AnyKernel setup
-          # begin properties
-          properties() { '
-          kernel.string=Custom Kernel for Samsung A7 2018 (a7y18lte)
-          do.devicecheck=0
-          do.modules=0
-          do.systemless=1
-          do.cleanup=1
-          do.cleanuponabort=0
-          supported.versions=
-          '; } # end properties
-
-          # shell variables
-          block=/dev/block/by-name/BOOT;
-          is_slot_device=0;
-          ramdisk_compression=auto;
-
-          ## AnyKernel methods (DO NOT CHANGE)
-          . tools/ak3-core.sh;
-
-          ## AnyKernel install
-          # begin ramdisk changes
-          # end ramdisk changes
-
-          ## AnyKernel boot install
-          split_boot;
-          flash_boot;
-          ## end install
-          EOF
-
-          # Copiar el kernel sin comprimir (Image)
-          cp kernel/out/arch/arm64/boot/Image anykernel/
-
-          # Crear el zip
-          cd anykernel
-          zip -r9 ../CustomKernel_a7y18lte.zip * -x "*.git*"
-          cd ..
-
-          echo "✅ Zip creado: CustomKernel_a7y18lte.zip"
-
-      # ============================================================
-      # SUBIR ARTIFACT (zip de AnyKernel3)
-      # ============================================================
       - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a7y18lte-kernel-anykernel
-          path: CustomKernel_a7y18lte.zip
+          name: a7y18lte-kernel-bundle
+          path: kernel/out/arch/arm64/boot/Image*
           if-no-files-found: error
