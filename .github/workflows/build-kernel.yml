@@ -1,4 +1,4 @@
-name: Build Kernel for a7y18lte (LineageOS 18.1) - Overclock GPU+CPU
+name: Build Kernel for a7y18lte (LineageOS 18.1) - Overclock GPU+CPU + AnyKernel3
 
 on:
   workflow_dispatch:
@@ -9,6 +9,10 @@ jobs:
     timeout-minutes: 60
 
     steps:
+
+      # ============================================================
+      # 1. CHECKOUT DEL KERNEL Y TOOLCHAIN
+      # ============================================================
 
       - name: Checkout kernel
         uses: actions/checkout@v4
@@ -41,7 +45,7 @@ jobs:
             gcc-arm-linux-gnueabi
 
       # ============================================================
-      # FIXES DE COMPILACIÓN
+      # 2. FIXES DE COMPILACIÓN
       # ============================================================
 
       - name: Fix decon_clocks_table
@@ -66,7 +70,7 @@ jobs:
           drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # OVERCLOCK CPU (EXYNOS 7885)
+      # 3. OVERCLOCK CPU
       # ============================================================
 
       - name: Apply CPU overclock in exynos-acme.c
@@ -95,7 +99,7 @@ jobs:
           ' drivers/cpufreq/exynos-acme.c
 
       # ============================================================
-      # OVERCLOCK GPU (MALI-G71 MP2)
+      # 4. OVERCLOCK GPU (MALI-G71 MP2)
       # ============================================================
 
       - name: Apply GPU overclock in exynos7885-mali.dtsi
@@ -112,7 +116,7 @@ jobs:
             arch/arm64/boot/dts/exynos/exynos7885-mali.dtsi
 
       # ============================================================
-      # COMPILACIÓN
+      # 5. COMPILACIÓN DEL KERNEL
       # ============================================================
 
       - name: Compile kernel
@@ -126,7 +130,7 @@ jobs:
           make O=out -j"$(nproc)"
 
       # ============================================================
-      # VERIFICACIÓN DE SALIDA
+      # 6. VERIFICACIÓN DEL KERNEL COMPILADO
       # ============================================================
 
       - name: Verify kernel output
@@ -139,11 +143,77 @@ jobs:
           fi
           echo "Kernel compiled successfully"
 
-      - name: Upload kernel artifact
+      # ============================================================
+      # 7. CLONAR ANYKERNEL3
+      # ============================================================
+
+      - name: Checkout AnyKernel3
+        uses: actions/checkout@v4
+        with:
+          repository: sacksso/AnyKernel3-a7y18lte
+          path: anykernel3
+          fetch-depth: 1
+
+      # ============================================================
+      # 8. COPIAR IMAGEN DEL KERNEL
+      # ============================================================
+
+      - name: Copy Image to AnyKernel3
+        run: |
+          cp kernel/out/arch/arm64/boot/Image anykernel3/Image
+          echo "Image copiado correctamente a AnyKernel3"
+          ls -lh anykernel3/Image
+
+      # ============================================================
+      # 9. GENERAR build-info.txt
+      # ============================================================
+
+      - name: Create build-info.txt
+        run: |
+          cat > anykernel3/build-info.txt <<EOF
+          ========================================
+          a7y18lte OC Kernel Build Information
+          ========================================
+          Device: Samsung Galaxy A7 2018 (a7y18lte)
+          Model: SM-A750F/FN/G
+          Kernel: Linux 4.4.302
+          Compiler: GCC 6.4.1
+          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Commit: $(git --git-dir=kernel/.git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+          ========================================
+          CPU Overclock:
+            BIG (Cortex-A73): 2288000 Hz (stock 2184000)
+            LITTLE (Cortex-A53): 1690000 Hz (stock 1586000)
+          ========================================
+          GPU Overclock (Mali-G71 MP2):
+            Max frequency: 1300000 Hz (stock 1100000)
+          ========================================
+          This ZIP contains:
+            - Patched kernel Image
+            - AnyKernel3 installer
+            - Suitable for TWRP installation
+          ========================================
+          EOF
+          cat anykernel3/build-info.txt
+
+      # ============================================================
+      # 10. EMPAQUETADO DEL ZIP
+      # ============================================================
+
+      - name: Create flashable ZIP
+        working-directory: anykernel3
+        run: |
+          zip -r9 ../a7y18lte-OC-Kernel.zip . -x "*.git*"
+          echo "ZIP creado correctamente"
+          ls -lh ../a7y18lte-OC-Kernel.zip
+
+      # ============================================================
+      # 11. SUBIR ARTIFACTO (ZIP FINAL)
+      # ============================================================
+
+      - name: Upload final ZIP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a7y18lte-kernel-overclock
-          path: |
-            kernel/out/arch/arm64/boot/Image
-            kernel/out/arch/arm64/boot/Image.gz
+          name: a7y18lte-OC-Kernel
+          path: a7y18lte-OC-Kernel.zip
           if-no-files-found: error
