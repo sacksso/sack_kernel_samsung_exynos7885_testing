@@ -107,31 +107,33 @@ jobs:
           sed -i \
             's/gpu_max_clock_limit = <1100000>;/gpu_max_clock_limit = <1300000>;/' \
             arch/arm64/boot/dts/exynos/exynos7885-mali.dtsi
-          echo "GPU max clock cambiado a 1300000"
+          echo "GPU max clock cambiado a 1300000 en Device Tree"
           grep -n "gpu_max_clock" \
             arch/arm64/boot/dts/exynos/exynos7885-mali.dtsi
 
       # ============================================================
-      # OVERCLOCK GPU (MODIFICACIÓN DIRECTA DEL DRIVER MALI)
+      # OVERCLOCK GPU (MODIFICACIÓN DIRECTA EN gpu_control.c)
       # ============================================================
 
-      - name: Force GPU max clock in mali driver
+      - name: Force GPU max clock in gpu_control.c
         working-directory: kernel
         run: |
-          # Buscar archivos del driver Mali y forzar gpu_max_clock
-          find drivers/gpu/arm -name "*.c" -exec grep -l "gpu_max_clock" {} \; | while read file; do
-            echo "Modificando $file"
-            sed -i 's/gpu_max_clock[[:space:]]*=[[:space:]]*[0-9]\+;/gpu_max_clock = 1300000;/g' "$file"
-            sed -i 's/gpu_max_clock_limit[[:space:]]*=[[:space:]]*[0-9]\+;/gpu_max_clock_limit = 1300000;/g' "$file"
-          done
-          # Asegurar que la tabla DVFS incluya 1300000
-          find drivers/gpu/arm -name "*.c" -exec grep -l "gpu_dvfs_table" {} \; | while read file; do
-            echo "Verificando tabla DVFS en $file"
-            if ! grep -q "1300000" "$file"; then
-              sed -i '/gpu_dvfs_table/s/{ *[0-9]*, *[0-9]* *, *[0-9]* *, *[0-9]* *, *[0-9]* *, *[0-9]* *, *[0-9]* *};/{1300000, 98, 100, 1, 1794000, 1586000, 0}, \0/g' "$file"
-            fi
-          done
-          echo "Driver Mali modificado para forzar 1300000 MHz"
+          FILE=$(find drivers/gpu/arm -name "gpu_control.c" | head -1)
+          if [ -z "$FILE" ]; then
+            echo "ERROR: No se encontró gpu_control.c"
+            exit 1
+          fi
+          echo "Modificando $FILE"
+          # Insertar el bloque antes del return 0 de gpu_control_module_init
+          sed -i '/^int gpu_control_module_init/,/^return 0;$/ {
+            /^return 0;$/ i\
+            \t/* Forzar overclock de GPU a 1300 MHz */\
+            \tplatform->gpu_max_clock = 1300000;\
+            \tplatform->gpu_max_clock_limit = 1300000;\
+            \tGPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "%s: GPU max clock forzado a %d\\n", __func__, platform->gpu_max_clock);
+          }' "$FILE"
+          echo "Modificación aplicada en $FILE"
+          grep -A10 "gpu_control_module_init" "$FILE"
 
       # ============================================================
       # COMPILACIÓN
