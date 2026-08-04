@@ -3055,7 +3055,7 @@
 			device_type = "cpufreq-userctrl";
 			shared-cpus = "6-7";
 
-			user-default-qos = <936000>;
+			user-default-qos = <2288000>;
 
 			min-limit {
 				ctrl-type = <PM_QOS_MIN_LIMIT>;
