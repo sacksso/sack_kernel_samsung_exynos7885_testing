@@ -66,7 +66,7 @@ jobs:
           drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # OVERCLOCK CPU (FINAL - REEMPLAZA EL ANTERIOR)
+      # OVERCLOCK CPU
       # ============================================================
 
       - name: Apply CPU overclock in exynos-acme.c (final)
@@ -160,6 +160,30 @@ jobs:
           grep -A5 "gpu_context_init" "$FILE"
 
       # ============================================================
+      # DESBLOQUEAR CPU BIG A 2288 EN DEVICE TREE
+      # ============================================================
+
+      - name: Fix CPU BIG frequency limit in Device Tree
+        working-directory: kernel
+        run: |
+          sed -i '/table = < 2184000 1794000/,/728000  420000>/c\
+                        table = < 2288000 1794000\
+                          2184000 1794000\
+                          2080000 1794000\
+                          1976000 1539000\
+                          1872000 1539000\
+                          1768000 1352000\
+                          1664000 1014000\
+                          1560000  845000\
+                          1352000  845000\
+                          1144000  676000\
+                           936000  546000\
+                           728000  420000>;' \
+          arch/arm64/boot/dts/exynos/exynos7885.dtsi
+          echo "Tabla mif-perf actualizada para incluir 2288000"
+          grep -A15 "mif-perf" arch/arm64/boot/dts/exynos/exynos7885.dtsi
+
+      # ============================================================
       # COMPILACIÓN
       # ============================================================
 
@@ -188,7 +212,7 @@ jobs:
           echo "Kernel compiled successfully"
 
       # ============================================================
-      # CLONAR ANYKERNEL3
+      # CLONAR ANYKERNEL3 Y EMPAQUETAR
       # ============================================================
 
       - name: Checkout AnyKernel3
@@ -198,19 +222,11 @@ jobs:
           path: anykernel3
           fetch-depth: 1
 
-      # ============================================================
-      # COPIAR IMAGEN DEL KERNEL
-      # ============================================================
-
       - name: Copy Image to AnyKernel3
         run: |
           cp kernel/out/arch/arm64/boot/Image anykernel3/Image
           echo "Image copiado correctamente a AnyKernel3"
           ls -lh anykernel3/Image
-
-      # ============================================================
-      # GENERAR build-info.txt
-      # ============================================================
 
       - name: Create build-info.txt
         run: |
@@ -240,10 +256,6 @@ jobs:
           EOF
           cat anykernel3/build-info.txt
 
-      # ============================================================
-      # EMPAQUETADO DEL ZIP
-      # ============================================================
-
       - name: Create flashable ZIP
         run: |
           cd anykernel3
@@ -251,10 +263,6 @@ jobs:
           cd ..
           echo "ZIP creado correctamente"
           ls -lh a7y18lte-OC-Kernel.zip
-
-      # ============================================================
-      # SUBIR EL ZIP COMO ARTIFACTO
-      # ============================================================
 
       - name: Upload final ZIP artifact
         uses: actions/upload-artifact@v4
