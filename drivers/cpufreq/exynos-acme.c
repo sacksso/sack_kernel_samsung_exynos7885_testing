@@ -273,6 +273,11 @@ static int exynos_cpufreq_driver_init(struct cpufreq_policy *policy)
 		return -EINVAL;
 
 	ret = cpufreq_table_validate_and_show(policy, domain->freq_table);
+        /* Forzar CPU BIG a 2288 MHz */
+        if (domain->id == 1) {
+                policy->max = 2288000;
+                policy->cpuinfo.max_freq = 2288000;
+        }
 	if (ret) {
 		pr_err("%s: invalid frequency table: %d\n", __func__, ret);
 		return ret;
