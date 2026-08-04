@@ -1092,9 +1092,21 @@ static __init int init_domain(struct exynos_cpufreq_domain *domain,
 
 	mutex_init(&domain->lock);
 
-	/* Initialize frequency scaling */
-	domain->max_freq = cal_dfs_get_max_freq(domain->cal_id);
-	domain->min_freq = cal_dfs_get_min_freq(domain->cal_id);
+	/* ============================================================
+	 * MODIFICACIÓN PARA OVERCLOCK DE CPU
+	 * Forzamos los valores de max_freq y min_freq según el dominio.
+	 * Esto anula los valores que vienen de CAL (hardware/ASV).
+	 * ============================================================ */
+	if (domain->id == 0) {
+		domain->max_freq = 1690000;
+		domain->min_freq = 208000;
+	} else if (domain->id == 1) {
+		domain->max_freq = 2288000;
+		domain->min_freq = 208000;
+	} else {
+		domain->max_freq = cal_dfs_get_max_freq(domain->cal_id);
+		domain->min_freq = cal_dfs_get_min_freq(domain->cal_id);
+	}
 
 	/*
 	 * If max-freq property exists in device tree, max frequency is
