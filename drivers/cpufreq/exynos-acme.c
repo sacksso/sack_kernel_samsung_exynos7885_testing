@@ -1129,6 +1129,9 @@ static __init int init_domain(struct exynos_cpufreq_domain *domain,
 		unsigned int i, cpu_count = cpumask_weight(&domain->cpus);
 
 		cal_dfs_get_bigturbo_max_freq(domain->boost_max_freqs);
+                /* Forzar boost max a 2288 MHz para CPU BIG */
+                if (domain->id == 1) 
+                    domain->boost_max_freqs[0] = 2288000;
 		if (of_find_property(dn, "boost_max_freqs", NULL)) {
 			unsigned int *max_freqs;
 
