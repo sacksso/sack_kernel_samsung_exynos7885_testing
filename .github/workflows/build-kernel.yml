@@ -66,33 +66,17 @@ jobs:
           drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # OVERCLOCK CPU
+      # OVERCLOCK CPU (FINAL - REEMPLAZA EL ANTERIOR)
       # ============================================================
 
-      - name: Apply CPU overclock in exynos-acme.c
+      - name: Apply CPU overclock in exynos-acme.c (final)
         working-directory: kernel
         run: |
           perl -0777 -pi -e '
-          s/(domain->resume_freq = cal_dfs_get_resume_freq\(domain->cal_id\);)/$1\n
-          \tif (domain->id == 0) {\n
-          \t\tdomain->max_freq = 1690000;\n
-          \t\tdomain->min_freq = 208000;\n
-          \t} else if (domain->id == 1) {\n
-          \t\tdomain->max_freq = 2288000;\n
-          \t\tdomain->min_freq = 208000;\n
-          \t}/s
+          s/domain->max_freq = cal_dfs_get_max_freq\(domain->cal_id\);\s*domain->min_freq = cal_dfs_get_min_freq\(domain->cal_id\);/if (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else if (domain->id == 1) {\n\t\tdomain->max_freq = 2288000;\n\t\tdomain->min_freq = 208000;\n\t} else {\n\t\tdomain->max_freq = cal_dfs_get_max_freq(domain->cal_id);\n\t\tdomain->min_freq = cal_dfs_get_min_freq(domain->cal_id);\n\t}/s
           ' drivers/cpufreq/exynos-acme.c
-
-      - name: Apply MIF constraints for overclock frequencies
-        working-directory: kernel
-        run: |
-          perl -0777 -pi -e '
-          s/(if \(freq >= table\[c_index\]\.master_freq\)\s*break;)/$1\n
-          \t\tif (freq == 2288000)\n
-          \t\t\tdm->c.freq_table[index].constraint_freq = 1794000;\n
-          \t\tif (freq == 1690000)\n
-          \t\t\tdm->c.freq_table[index].constraint_freq = 1014000;/s
-          ' drivers/cpufreq/exynos-acme.c
+          echo "Overclock CPU aplicado en exynos-acme.c"
+          grep -A8 "domain->id == 0" drivers/cpufreq/exynos-acme.c
 
       # ============================================================
       # OVERCLOCK GPU (MODIFICACIÓN EN DEVICE TREE)
@@ -168,7 +152,6 @@ jobs:
             exit 1
           fi
           echo "Modificando $FILE"
-          # Forzar en gpu_context_init después de leer DT
           sed -i '/core_props->gpu_freq_khz_max = platform->gpu_max_clock \* 1000;/a \
           \t/* Forzar overclock de GPU a 1300 MHz */\
           \tplatform->gpu_max_clock = 1300000;\
