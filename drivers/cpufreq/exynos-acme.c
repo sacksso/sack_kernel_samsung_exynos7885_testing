@@ -1162,7 +1162,8 @@ static __init int init_domain(struct exynos_cpufreq_domain *domain,
 		}
 
 		/* change domain->max_freq to maximum level in boost table */
-		domain->max_freq = max(domain->max_freq, domain->boost_max_freqs[0]);
+		// domain->max_freq = max(domain->max_freq, domain->boost_max_freqs[0]);
+                if (domain->id == 1) domain->max_freq = 2288000;
 	}
 
 init_table:
