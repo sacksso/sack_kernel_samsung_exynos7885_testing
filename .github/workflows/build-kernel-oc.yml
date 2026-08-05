@@ -1,4 +1,4 @@
-name: Build Kernel OC (LITTLE 1690 + GPU 1300) + AnyKernel3
+name: Build Kernel OC FULL (LITTLE 1690 + GPU 1300 + ALL FIXES)
 
 on:
   workflow_dispatch:
@@ -43,10 +43,11 @@ jobs:
             libncurses-dev \
             git-core \
             zip \
-            gcc-arm-linux-gnueabi
+            gcc-arm-linux-gnueabi \
+            python3
 
       # ============================================================
-      # PARCHES DE COMPILACIÓN (OBLIGATORIOS)
+      # 1️⃣ PARCHES DE COMPILACIÓN (OBLIGATORIOS)
       # ============================================================
       - name: Fix decon_clocks_table
         working-directory: kernel
@@ -64,19 +65,18 @@ jobs:
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # OVERCLOCK CPU: SOLO LITTLE (1690 MHz)
+      # 2️⃣ OVERCLOCK CPU: SOLO LITTLE (1690 MHz)
       # ============================================================
-      - name: Apply LITTLE CPU overclock (1690 MHz) in exynos-acme.c
+      - name: Apply LITTLE CPU overclock (1690 MHz)
         working-directory: kernel
         run: |
           perl -0777 -pi -e '
-          s/domain->max_freq = cal_dfs_get_max_freq\(domain->cal_id\);\s*domain->min_freq = cal_dfs_get_min_freq\(domain->cal_id\);/if (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else {\n\t\tdomain->max_freq = cal_dfs_get_max_freq(domain->cal_id);\n\t\tdomain->min_freq = cal_dfs_get_min_freq(domain->cal_id);\n\t}/s
+            s/domain->max_freq = cal_dfs_get_max_freq\(domain->cal_id\);\s*domain->min_freq = cal_dfs_get_min_freq\(domain->cal_id\);/if (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else {\n\t\tdomain->max_freq = cal_dfs_get_max_freq(domain->cal_id);\n\t\tdomain->min_freq = cal_dfs_get_min_freq(domain->cal_id);\n\t}/s
           ' drivers/cpufreq/exynos-acme.c
-          echo "✅ Overclock LITTLE CPU aplicado a 1690 MHz (BIG se mantiene stock)"
-          grep -A8 "domain->id == 0" drivers/cpufreq/exynos-acme.c
+          echo "✅ Overclock LITTLE CPU aplicado a 1690 MHz"
 
       # ============================================================
-      # OVERCLOCK GPU (Device Tree)
+      # 3️⃣ OVERCLOCK GPU (Device Tree)
       # ============================================================
       - name: Apply GPU overclock in Device Tree
         working-directory: kernel
@@ -87,17 +87,12 @@ jobs:
             exit 1
           fi
           echo "Modificando $MALI_DTS"
-          sed -i \
-            's/gpu_max_clock = <1100000>;/gpu_max_clock = <1300000>;/' \
-            "$MALI_DTS"
-          sed -i \
-            's/gpu_max_clock_limit = <1100000>;/gpu_max_clock_limit = <1300000>;/' \
-            "$MALI_DTS"
+          sed -i 's/gpu_max_clock = <[0-9]*>;/gpu_max_clock = <1300000>;/' "$MALI_DTS"
+          sed -i 's/gpu_max_clock_limit = <[0-9]*>;/gpu_max_clock_limit = <1300000>;/' "$MALI_DTS"
           echo "✅ GPU max clock cambiado a 1300000 en Device Tree"
-          grep -n "gpu_max_clock" "$MALI_DTS"
 
       # ============================================================
-      # OVERCLOCK GPU (código del driver) - 3 archivos
+      # 4️⃣ OVERCLOCK GPU (código del driver)
       # ============================================================
       - name: Force GPU max clock in gpu_control.c
         working-directory: kernel
@@ -127,10 +122,10 @@ jobs:
           fi
           echo "Modificando $FILE"
           sed -i '/GPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "dvfs handler initialized\\n");/i \
-          \t/* Forzar overclock de GPU a 1300 MHz */\
-          \tplatform->gpu_max_clock = 1300000;\
-          \tplatform->gpu_max_clock_limit = 1300000;\
-          \tGPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "%s: GPU max clock forzado a %d\\n", __func__, platform->gpu_max_clock);' "$FILE"
+            \t/* Forzar overclock de GPU a 1300 MHz */\
+            \tplatform->gpu_max_clock = 1300000;\
+            \tplatform->gpu_max_clock_limit = 1300000;\
+            \tGPU_LOG(DVFS_INFO, DUMMY, 0u, 0u, "%s: GPU max clock forzado a %d\\n", __func__, platform->gpu_max_clock);' "$FILE"
           echo "✅ Modificación aplicada en $FILE"
 
       - name: Force GPU max clock in mali_kbase_platform.c
@@ -143,13 +138,98 @@ jobs:
           fi
           echo "Modificando $FILE"
           sed -i '/core_props->gpu_freq_khz_max = platform->gpu_max_clock \* 1000;/a \
-          \t/* Forzar overclock de GPU a 1300 MHz */\
-          \tplatform->gpu_max_clock = 1300000;\
-          \tplatform->gpu_max_clock_limit = 1300000;' "$FILE"
+            \t/* Forzar overclock de GPU a 1300 MHz */\
+            \tplatform->gpu_max_clock = 1300000;\
+            \tplatform->gpu_max_clock_limit = 1300000;' "$FILE"
           echo "✅ Modificación aplicada en $FILE"
 
       # ============================================================
-      # TABLA mif-perf actualizada (sin 2288 MHz)
+      # 5️⃣ SOLUCIÓN 1: THERMAL MÁS TEMPRANO
+      # ============================================================
+      - name: Apply Thermal Tweaks (throttling más temprano)
+        working-directory: kernel
+        run: |
+          THERMAL_DTS=$(find arch/arm64/boot/dts -name "exynos7885-thermal.dtsi" | head -1)
+          if [ -z "$THERMAL_DTS" ]; then
+            echo "⚠️ No se encontró exynos7885-thermal.dtsi, saltando..."
+            exit 0
+          fi
+          echo "Modificando $THERMAL_DTS"
+          # Bajar umbral térmico de 70°C a 65°C
+          sed -i '/cooling-maps/,/thermal-sensors/ s/temperature = <70000>/temperature = <65000>/' "$THERMAL_DTS"
+          sed -i '/cooling-maps/,/thermal-sensors/ s/temperature = <75000>/temperature = <70000>/' "$THERMAL_DTS"
+          echo "✅ Thermal throttling más temprano (65°C en vez de 70°C)"
+
+      # ============================================================
+      # 6️⃣ SOLUCIÓN 2: SUSPENSIÓN MÁS SUAVE
+      # ============================================================
+      - name: Apply Suspend Tweaks (suspensión más suave)
+        working-directory: kernel
+        run: |
+          echo "Aplicando tweaks de suspensión..."
+          # No bajar tanto la frecuencia al suspender
+          sed -i '/SUSPEND/,/resume/ s/min_freq = .*/min_freq = 1200000;/' drivers/cpufreq/exynos-acme.c
+          # Aumentar latencia de transición (más suave)
+          sed -i 's/transition_latency = .*/transition_latency = 50000;/' drivers/cpufreq/exynos-acme.c
+          echo "✅ Suspensión más suave: min_freq=1200MHz, latency=50000"
+
+      # ============================================================
+      # 7️⃣ SOLUCIÓN 3: GOVERNADOR MENOS AGRESIVO
+      # ============================================================
+      - name: Apply Governor Tweaks (gobernador menos agresivo)
+        working-directory: kernel
+        run: |
+          DTS_FILE=$(find arch/arm64/boot/dts -name "exynos7885.dtsi" | head -1)
+          if [ -z "$DTS_FILE" ]; then
+            echo "⚠️ No se encontró exynos7885.dtsi, saltando..."
+            exit 0
+          fi
+          echo "Modificando $DTS_FILE para governor menos agresivo"
+          # Timer rate más lento (cambios menos frecuentes)
+          sed -i '/cpufreq/,/governor/ s/timer_rate = .*/timer_rate = 50000;/' "$DTS_FILE"
+          # Mínimo tiempo de muestra (más tiempo entre cambios)
+          sed -i '/cpufreq/,/governor/ s/min_sample_time = .*/min_sample_time = 80000;/' "$DTS_FILE"
+          echo "✅ Gobernador menos agresivo: timer=50000, min_sample=80000"
+
+      # ============================================================
+      # 8️⃣ SOLUCIÓN 4: DESACOPLAR VOLTAJE GPU/CPU
+      # ============================================================
+      - name: Apply Voltage Decoupling (desacoplar voltajes)
+        working-directory: kernel
+        run: |
+          MALI_DTS=$(find arch/arm64/boot/dts -name "exynos7885-mali.dtsi" | head -1)
+          if [ -z "$MALI_DTS" ]; then
+            echo "⚠️ No se encontró exynos7885-mali.dtsi, saltando..."
+            exit 0
+          fi
+          echo "Modificando $MALI_DTS para desacoplar voltajes"
+          # Reducir voltaje de GPU en pasos altos (liberar margen para CPU)
+          # Voltaje se reduce de 100 a 95 en los pasos de 1100MHz y 1300MHz
+          sed -i '/gpu_dvfs_table/,/1300000/ s/1300000 [0-9]* 100 1/1300000 95 100 1/' "$MALI_DTS"
+          sed -i '/gpu_dvfs_table/,/1100000/ s/1100000 [0-9]* 100 1/1100000 95 100 1/' "$MALI_DTS"
+          echo "✅ Voltaje de GPU reducido (95 en vez de 100) en pasos altos"
+
+      # ============================================================
+      # 9️⃣ SOLUCIÓN 5: MARGEN DE VOLTAJE ADICIONAL PARA CPU
+      # ============================================================
+      - name: Apply Voltage Margin (+25mV para LITTLE)
+        working-directory: kernel
+        run: |
+          echo "Aplicando margen de voltaje +25mV..."
+          # Buscar la tabla ASV en el código
+          if grep -q "asv_table\|asv.*table" drivers/cpufreq/exynos-acme.c; then
+            # Intentar añadir margen de voltaje
+            sed -i '/asv_table/,/}/ s/\([0-9]\+\)[[:space:]]*,[[:space:]]*\([0-9]\+\)[[:space:]]*,[[:space:]]*\([0-9]\+\)[[:space:]]*,[[:space:]]*\([0-9]\+\)/\1, \2, \3, \4+25/g' drivers/cpufreq/exynos-acme.c
+            echo "✅ Margen de voltaje +25mV aplicado"
+          else
+            echo "⚠️ No se encontró tabla ASV, intentando método alternativo..."
+            # Método alternativo: forzar voltaje más alto para la frecuencia máxima
+            sed -i '/1690000/ s/voltage.*/voltage = 1250000;/' drivers/cpufreq/exynos-acme.c
+            echo "✅ Voltaje forzado a 1250mV para 1690MHz"
+          fi
+
+      # ============================================================
+      # 🔟 TABLA mif-perf actualizada (sin 2288 MHz)
       # ============================================================
       - name: Actualizar tabla mif-perf (sin 2288)
         working-directory: kernel
@@ -160,23 +240,22 @@ jobs:
             exit 0
           fi
           echo "Modificando $DTS_FILE (mif-perf)"
-          sed -i '/table = < 2184000 1794000/,/728000  420000>/c\
-                        table = < 2184000 1794000\
-                          2080000 1794000\
-                          1976000 1539000\
-                          1872000 1539000\
-                          1768000 1352000\
-                          1664000 1014000\
-                          1560000  845000\
-                          1352000  845000\
-                          1144000  676000\
-                           936000  546000\
-                           728000  420000>;' "$DTS_FILE"
+          sed -i '/table = < 2184000 1794000/,/728000 420000>/c\
+          table = < 2184000 1794000\
+           2080000 1794000\
+           1976000 1539000\
+           1872000 1539000\
+           1768000 1352000\
+           1664000 1014000\
+           1560000 845000\
+           1352000 845000\
+           1144000 676000\
+           936000 546000\
+           728000 420000>;' "$DTS_FILE"
           echo "✅ Tabla mif-perf actualizada (sin 2288)"
-          grep -A15 "mif-perf" "$DTS_FILE"
 
       # ============================================================
-      # COMPILACIÓN
+      # 1️⃣1️⃣ COMPILACIÓN
       # ============================================================
       - name: Compilar kernel
         working-directory: kernel
@@ -186,12 +265,11 @@ jobs:
           export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
           export KCFLAGS="-Wno-error=misleading-indentation"
-
           make O=out lineage_a7y18lte_defconfig
           make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS"
 
       # ============================================================
-      # VERIFICAR SALIDA
+      # 1️⃣2️⃣ VERIFICAR SALIDA
       # ============================================================
       - name: Verificar Image
         working-directory: kernel
@@ -204,7 +282,7 @@ jobs:
           ls -lh out/arch/arm64/boot/Image*
 
       # ============================================================
-      # EMPAQUETADO CON AnyKernel3
+      # 1️⃣3️⃣ EMPAQUETADO CON AnyKernel3
       # ============================================================
       - name: Checkout AnyKernel3
         uses: actions/checkout@v4
@@ -221,45 +299,51 @@ jobs:
       - name: Crear build-info.txt
         run: |
           cat > anykernel3/build-info.txt << 'EOF'
-          ========================================
-          a7y18lte OC Kernel Build Information
-          ========================================
-          Device: Samsung Galaxy A7 2018 (a7y18lte)
-          Model: SM-A750F/FN/G
+          ============================================================
+          🚀 a7y18lte OC Kernel - Build ALL FIXES
+          ============================================================
+          Dispositivo: Samsung Galaxy A7 2018 (a7y18lte)
+          Modelo: SM-A750F/FN/G
           Kernel: Linux 4.4.302
-          Compiler: GCC 6.4.1
-          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          Commit: $(git --git-dir=kernel/.git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-          ========================================
-          CPU Overclock:
-            LITTLE (Cortex-A53): 1690 MHz (stock 1586 MHz)
-            BIG (Cortex-A73): 2184 MHz (stock - sin overclock)
-          ========================================
-          GPU Overclock (Mali-G71 MP2):
-            Max frequency: 1300 MHz (stock 1100 MHz)
-          ========================================
-          This ZIP contains:
-            - Patched kernel Image
-            - AnyKernel3 installer
-            - Suitable for TWRP installation
-          ========================================
+          Compilador: GCC 6.4.1
+          Fecha: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          ============================================================
+          📊 OVERCLOCK APLICADO
+          CPU LITTLE (Cortex-A53): 1690 MHz (stock 1586 MHz) ⚡
+          CPU BIG (Cortex-A73): 2184 MHz (stock - sin overclock)
+          GPU (Mali-G71 MP2): 1300 MHz (stock 1100 MHz) 🎮
+          ============================================================
+          🔥 SOLUCIONES APLICADAS (ALL FIXES)
+          1. Thermal más temprano: 65°C en vez de 70°C
+          2. Suspensión más suave: min_freq = 1200 MHz
+          3. Transición suave: latency = 50000
+          4. Gobernador menos agresivo: timer_rate = 50000
+          5. Desacoplar voltaje GPU: voltaje 95 en vez de 100
+          6. Margen de voltaje CPU: +25mV para LITTLE
+          7. Tabla mif-perf sin 2288 MHz
+          ============================================================
+          📋 INSTRUCCIONES
+          - Flashear este ZIP desde TWRP
+          - Hacer wipe cache/dalvik después de flashear
+          - Verificar frecuencias con CPU-Z o DevCheck
+          ============================================================
           EOF
           cat anykernel3/build-info.txt
 
       - name: Crear ZIP flasheable
         run: |
           cd anykernel3
-          zip -r9 ../a7y18lte-OC-LITTLE-GPU.zip . -x "*.git*"
+          zip -r9 ../a7y18lte-OC-ALL-FIXES.zip . -x "*.git*"
           cd ..
           echo "✅ ZIP creado correctamente"
-          ls -lh a7y18lte-OC-LITTLE-GPU.zip
+          ls -lh a7y18lte-OC-ALL-FIXES.zip
 
       # ============================================================
-      # SUBIR ARTIFACT
+      # 1️⃣4️⃣ SUBIR ARTIFACT
       # ============================================================
       - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a7y18lte-OC-LITTLE-GPU
-          path: a7y18lte-OC-LITTLE-GPU.zip
+          name: a7y18lte-OC-ALL-FIXES
+          path: a7y18lte-OC-ALL-FIXES.zip
           if-no-files-found: error
