@@ -1418,3 +1418,27 @@ static int __init exynos_thermal_override_init(void)
     return ret;
 }
 late_initcall(exynos_thermal_override_init);
+
+/* Forzar frecuencia máxima de CPU BIG a 2288 MHz después de la inicialización */
+static int __init exynos_force_big_max_freq(void)
+{
+    int cpu;
+    struct cpufreq_policy *policy;
+
+    pr_info("EXYNOS: Forzando política para CPU BIG a 2288000\n");
+
+    for_each_possible_cpu(cpu) {
+        if (cpu >= 6) {  /* Núcleos BIG (A73) en Exynos 7885 */
+            policy = cpufreq_cpu_get(cpu);
+            if (!policy)
+                continue;
+            policy->max = 2288000;
+            policy->cpuinfo.max_freq = 2288000;
+            cpufreq_update_policy(cpu);
+            cpufreq_cpu_put(policy);
+            pr_info("EXYNOS: CPU%d política actualizada a max=2288000\n", cpu);
+        }
+    }
+    return 0;
+}
+late_initcall(exynos_force_big_max_freq);
