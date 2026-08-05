@@ -1387,3 +1387,34 @@ static int __init exynos_cpufreq_init(void)
 	return ret;
 }
 device_initcall(exynos_cpufreq_init);
+
+/* Sobrescribir límites térmicos para CPU BIG */
+static int exynos_thermal_override_notifier(struct notifier_block *nb,
+                                            unsigned long event, void *data)
+{
+    struct cpufreq_policy *policy = data;
+
+    if (event == CPUFREQ_POLICY_INIT || event == CPUFREQ_POLICY_UPDATE) {
+        if (policy->cpu >= 6) {
+            policy->max = 2288000;
+            policy->cpuinfo.max_freq = 2288000;
+            pr_info("EXYNOS: Thermal override for CPU%d -> max=2288000\n", policy->cpu);
+        }
+    }
+    return NOTIFY_OK;
+}
+
+static struct notifier_block exynos_thermal_override_nb = {
+    .notifier_call = exynos_thermal_override_notifier,
+    .priority = INT_MAX,
+};
+
+static int __init exynos_thermal_override_init(void)
+{
+    int ret;
+    ret = cpufreq_register_notifier(&exynos_thermal_override_nb, CPUFREQ_POLICY_NOTIFIER);
+    if (ret)
+        pr_err("EXYNOS: Failed to register thermal override notifier\n");
+    return ret;
+}
+late_initcall(exynos_thermal_override_init);
