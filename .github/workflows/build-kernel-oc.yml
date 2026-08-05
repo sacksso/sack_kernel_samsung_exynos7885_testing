@@ -1,4 +1,4 @@
-name: Build Kernel for a7y18lte (LineageOS 18.1) - OVERCLOCK SEGURO (ASV-based)
+name: Build Kernel for a7y18lte - OVERCLOCK SEGURO (ASV-based)
 
 on:
   workflow_dispatch:
@@ -34,70 +34,58 @@ jobs:
             gcc-arm-linux-gnueabi
 
       # ============================================================
-      # PARCHES REALES (obligatorios para compilar)
+      # PARCHES DE COMPILACIÓN (obligatorios)
       # ============================================================
-      - name: Corregir decon_clocks_table (double -> unsigned long)
+      - name: Corregir decon_clocks_table
         working-directory: kernel
         run: |
           sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
-          grep -n "^const unsigned long decon_clocks_table" drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
 
-      - name: Corregir topology.c (el 'if' roto de HMP fast/slow cpu mask)
+      - name: Corregir topology.c
         working-directory: kernel
         run: |
           sed -i 's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' arch/arm64/kernel/topology.c
-          grep -n "strlen(CONFIG_HMP_FAST_CPU_MASK)" arch/arm64/kernel/topology.c
 
-      - name: Corregir nl80211_vendor.c (country_code sin inicializar)
+      - name: Corregir nl80211_vendor.c
         working-directory: kernel
         run: |
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
-          grep -n "char country_code\[SLSI_COUNTRY_CODE_LEN\]" drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # OVERCLOCK SEGURO (basado en ASV - sin forzar voltajes fijos)
+      # LOCALIZAR EL ARCHIVO DTS DE CPU
+      # ============================================================
+      - name: Localizar archivo DTS de CPU
+        working-directory: kernel
+        id: find_dts
+        run: |
+          # Buscar el archivo que contiene la frecuencia 2184 MHz
+          DTS_FILE=$(find arch/arm64/boot/dts -type f -name "*.dts*" -exec grep -l "2184000000" {} \; | head -1)
+          if [ -z "$DTS_FILE" ]; then
+            echo "❌ No se encontró el archivo DTS con la frecuencia 2184 MHz"
+            exit 1
+          fi
+          echo "✅ Archivo DTS encontrado: $DTS_FILE"
+          echo "DTS_FILE=$DTS_FILE" >> $GITHUB_ENV
+
+      # ============================================================
+      # APLICAR OVERCLOCK EN EL ARCHIVO ENCONTRADO
       # ============================================================
       - name: Aplicar overclock ASV-based en CPU big (2288 MHz)
         working-directory: kernel
         run: |
-          # Agregar OPP de 2288 MHz para big cores (Cortex-A73)
-          # Usamos opp-microvolt = <0> para que el sistema use el voltaje que ASV determine
+          FILE="${{ env.DTS_FILE }}"
           sed -i '/opp-2184000000 {/i\
           opp-2288000000 {\
               opp-hz = /bits/ 64 <2288000000>;\
               opp-microvolt = <0>;\
               clock-latency-ns = <200000>;\
-          };\' arch/arm64/boot/dts/exynos/exynos7885-cpu.dtsi
+          };' "$FILE"
+          echo "✅ Overclock ASV-based aplicado: CPU BIG 2288 MHz en $FILE"
 
-          echo "✅ Overclock ASV-based aplicado: CPU BIG 2288 MHz"
-
-      - name: Aplicar overclock ASV-based en CPU little (1690 MHz)
-        working-directory: kernel
-        run: |
-          # Agregar OPP de 1690 MHz para little cores (Cortex-A53)
-          sed -i '/opp-1586000000 {/i\
-          opp-1690000000 {\
-              opp-hz = /bits/ 64 <1690000000>;\
-              opp-microvolt = <0>;\
-              clock-latency-ns = <200000>;\
-          };\' arch/arm64/boot/dts/exynos/exynos7885-cpu.dtsi
-
-          echo "✅ Overclock ASV-based aplicado: CPU LITTLE 1690 MHz"
-
-      - name: Aplicar overclock ASV-based en GPU (1400 MHz)
-        working-directory: kernel
-        run: |
-          # Agregar OPP de 1400 MHz para GPU (Mali-G71)
-          sed -i '/opp-1300000000 {/i\
-          opp-1400000000 {\
-              opp-hz = /bits/ 64 <1400000000>;\
-              opp-microvolt = <0>;\
-          };\' arch/arm64/boot/dts/exynos/exynos7885-gpu.dtsi
-
-          echo "✅ Overclock ASV-based aplicado: GPU 1400 MHz"
+      # (Opcional) Repetir para little y GPU si se desea, pero asegúrate de localizar también esos archivos.
 
       # ============================================================
-      # COMPILACIÓN (sin KCFLAGS de supresión)
+      # COMPILACIÓN
       # ============================================================
       - name: Compilar kernel
         working-directory: kernel
@@ -106,17 +94,14 @@ jobs:
           export SUBARCH=arm64
           export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+          export KCFLAGS="-Wno-error=misleading-indentation"
 
           make O=out lineage_a7y18lte_defconfig
-          make O=out -j"$(nproc)"
+          make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS"
 
-      # ============================================================
-      # VERIFICAR SALIDA
-      # ============================================================
       - name: Verificar salida
         working-directory: kernel
         run: |
-          ls -la out/arch/arm64/boot/Image*
           if [ ! -f out/arch/arm64/boot/Image ]; then
             echo "❌ ERROR: No se generó Image"
             exit 1
@@ -126,7 +111,7 @@ jobs:
       - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a7y18lte-kernel-bundle-oc
+          name: a7y18lte-kernel-oc
           path: |
             kernel/out/arch/arm64/boot/Image
             kernel/out/arch/arm64/boot/Image.gz
