@@ -149,10 +149,9 @@ jobs:
           echo "✅ Modificación aplicada en $FILE"
 
       # ============================================================
-      # (OPCIONAL) Tabla mif-perf - no necesaria si BIG no se overclockea
-      # Pero la dejo para que no dé error si se usa.
+      # TABLA mif-perf actualizada (sin 2288 MHz)
       # ============================================================
-      - name: (Opcional) Actualizar tabla mif-perf (solo por compatibilidad)
+      - name: Actualizar tabla mif-perf (sin 2288)
         working-directory: kernel
         run: |
           DTS_FILE=$(find arch/arm64/boot/dts -name "exynos7885.dtsi" | head -1)
