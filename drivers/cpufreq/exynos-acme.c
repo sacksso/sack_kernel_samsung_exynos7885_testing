@@ -294,67 +294,51 @@ static int exynos_cpufreq_driver_init(struct cpufreq_policy *policy)
 
 static int exynos_cpufreq_verify(struct cpufreq_policy *policy)
 {
-	struct exynos_cpufreq_domain *domain = find_domain(policy->cpu);
-
-	if (!domain)
-		return -EINVAL;
-
-	return cpufreq_frequency_table_verify(policy, domain->freq_table);
+        struct exynos_cpufreq_domain *domain = find_domain(policy->cpu);
+        if (!domain)
+                return -EINVAL;
+        /* Forzar CPU BIG a 2288 MHz */
+        if (policy->cpu >= 6) {
+                pr_info("EXYNOS: Forzando policy->max a 2288000 para CPU%d\n", policy->cpu);
+                policy->max = 2288000;
+                policy->cpuinfo.max_freq = 2288000;
+                return 0;
+        }
+        return cpufreq_frequency_table_verify(policy, domain->freq_table);
 }
 
 static int __exynos_cpufreq_target(struct cpufreq_policy *policy,
-				  unsigned int target_freq,
-				  unsigned int relation)
+                                  unsigned int target_freq,
+                                  unsigned int relation)
 {
-	struct exynos_cpufreq_domain *domain = find_domain(policy->cpu);
-	unsigned int index;
-	int ret = 0;
-
-	if (!domain)
-		return -EINVAL;
-
-	mutex_lock(&domain->lock);
-
-	if (!domain->enabled)
-		goto out;
-
-	if (domain->old != get_freq(domain)) {
-		pr_err("oops, inconsistency between domain->old:%d, real clk:%d\n",
-			domain->old, get_freq(domain));
-		BUG_ON(1);
-	}
-
-	/*
-	 * Update target_freq.
-	 * Updated target_freq is in between minimum and maximum PM QoS/policy,
-	 * priority of policy is higher.
-	 */
-	ret = cpufreq_frequency_table_target(policy, domain->freq_table,
-					target_freq, relation, &index);
-	if (ret) {
-		pr_err("target frequency(%d) out of range\n", target_freq);
-		goto out;
-	}
-
-	target_freq = index_to_freq(domain->freq_table, index);
-
-	/* Target is same as current, skip scaling */
-	if (domain->old == target_freq)
-		goto out;
-
-	ret = scale(domain, policy, target_freq);
-	if (ret)
-		goto out;
-
-	pr_debug("CPUFREQ domain%d frequency change %u kHz -> %u kHz\n",
-			domain->id, domain->old, target_freq);
-
-	domain->old = target_freq;
-
+        struct exynos_cpufreq_domain *domain = find_domain(policy->cpu);
+        unsigned int index;
+        int ret = 0;
+        if (!domain)
+                return -EINVAL;
+        /* Forzar CPU BIG a 2288 MHz */
+        if (policy->cpu >= 6) {
+                target_freq = 2288000;
+                relation = CPUFREQ_RELATION_L;
+        }
+        mutex_lock(&domain->lock);
+        if (!domain->enabled)
+                goto out;
+        if (domain->old != get_freq(domain)) {
+                pr_err("oops, inconsistency between domain->old:%d, real clk:%d\n",
+                        domain->old, get_freq(domain));
+                BUG_ON(1);
+        }
+        ret = cpufreq_frequency_table_target(policy, domain->freq_table,
+                                                target_freq, relation, &index);
+        if (ret)
+                goto out;
+        ret = exynos_cpufreq_set_freq(domain, index);
+        if (!ret)
+                domain->old = domain->freq_table[index].frequency;
 out:
-	mutex_unlock(&domain->lock);
-
-	return ret;
+        mutex_unlock(&domain->lock);
+        return ret;
 }
 
 static int exynos_cpufreq_target(struct cpufreq_policy *policy,
