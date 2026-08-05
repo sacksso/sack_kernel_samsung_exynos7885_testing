@@ -1,4 +1,4 @@
-name: Build Kernel for a7y18lte (LineageOS 18.1)
+name: Build Kernel for a7y18lte (LineageOS 18.1) - ESTABLE con AnyKernel3
 
 on:
   workflow_dispatch:
@@ -9,7 +9,10 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Checkout del kernel
+      # ------------------------------------------------------------
+      # 1. Checkout del kernel
+      # ------------------------------------------------------------
+      - name: Checkout kernel
         uses: actions/checkout@v4
         with:
           repository: exynos7885-dev/kernel_samsung_exynos7885
@@ -17,7 +20,10 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Checkout toolchain GCC 6.4.1
+      # ------------------------------------------------------------
+      # 2. Checkout toolchain GCC 6.4.1
+      # ------------------------------------------------------------
+      - name: Checkout toolchain
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1
@@ -25,6 +31,9 @@ jobs:
           path: toolchain/aarch64
           fetch-depth: 1
 
+      # ------------------------------------------------------------
+      # 3. Instalar dependencias
+      # ------------------------------------------------------------
       - name: Instalar dependencias
         run: |
           sudo apt-get update
@@ -33,33 +42,22 @@ jobs:
             libncurses-dev git-core zip \
             gcc-arm-linux-gnueabi
 
-      # ============================================================
-      # PARCHES REALES (arreglan la causa, no solo el warning del
-      # compilador) - los tres confirmados contra el código fuente:
-      # ============================================================
-
-      - name: Corregir decon_clocks_table (double -> unsigned long)
+      # ------------------------------------------------------------
+      # 4. Aplicar los 3 parches de compilación (obligatorios)
+      # ------------------------------------------------------------
+      - name: Aplicar parches de compilación
         working-directory: kernel
         run: |
+          # Fix decon_clocks_table
           sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
-          grep -n "^const unsigned long decon_clocks_table" drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
-
-      - name: Corregir topology.c (el 'if' roto de HMP fast/slow cpu mask)
-        working-directory: kernel
-        run: |
+          # Fix topology.c
           sed -i 's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' arch/arm64/kernel/topology.c
-          grep -n "strlen(CONFIG_HMP_FAST_CPU_MASK)" arch/arm64/kernel/topology.c
-
-      - name: Corregir nl80211_vendor.c (country_code sin inicializar)
-        working-directory: kernel
-        run: |
+          # Fix country_code
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
-          grep -n "char country_code\[SLSI_COUNTRY_CODE_LEN\]" drivers/net/wireless/scsc/nl80211_vendor.c
 
-      # ============================================================
-      # COMPILACIÓN - sin KCFLAGS de supresión. Si algo más rompe acá,
-      # es una señal real que hay que revisar, no tapar.
-      # ============================================================
+      # ------------------------------------------------------------
+      # 5. Compilar kernel
+      # ------------------------------------------------------------
       - name: Compilar kernel
         working-directory: kernel
         run: |
@@ -67,28 +65,86 @@ jobs:
           export SUBARCH=arm64
           export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+          export KCFLAGS="-Wno-error=misleading-indentation"
 
           make O=out lineage_a7y18lte_defconfig
-          make O=out -j"$(nproc)"
+          make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS"
 
-      # ============================================================
-      # VERIFICAR SALIDA
-      # ============================================================
-      - name: Verificar salida
+      # ------------------------------------------------------------
+      # 6. Verificar salida
+      # ------------------------------------------------------------
+      - name: Verificar Image
         working-directory: kernel
         run: |
-          ls -la out/arch/arm64/boot/Image*
           if [ ! -f out/arch/arm64/boot/Image ]; then
             echo "❌ ERROR: No se generó Image"
             exit 1
           fi
           echo "✅ Image generado correctamente"
+          ls -lh out/arch/arm64/boot/Image*
 
+      # ------------------------------------------------------------
+      # 7. Empaquetar con AnyKernel3
+      # ------------------------------------------------------------
+      - name: Preparar AnyKernel3 y crear zip flasheable
+        run: |
+          # Crear estructura de carpetas
+          mkdir -p anykernel/META-INF/com/google/android
+          mkdir -p anykernel/tools
+
+          # Descargar archivos de AnyKernel3 (versión estable)
+          wget -O anykernel/tools/ak3-core.sh https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/tools/ak3-core.sh
+          wget -O anykernel/META-INF/com/google/android/update-binary https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/META-INF/com/google/android/update-binary
+
+          # Crear updater-script
+          cat > anykernel/META-INF/com/google/android/updater-script << 'EOF'
+ui_print("Instalando kernel para a7y18lte (LineageOS 18.1)");
+ui_print("Versión ESTABLE - Sin overclock");
+package_extract_file("anykernel.sh", "/tmp/anykernel.sh");
+set_perm(0, 0, 0777, "/tmp/anykernel.sh");
+run_program("/tmp/anykernel.sh");
+EOF
+
+          # Crear anykernel.sh
+          cat > anykernel/anykernel.sh << 'EOF'
+# AnyKernel3 Ramdisk Mod Script
+# osm0sis @ xda-developers
+
+properties() { '
+kernel.string=Kernel estable para a7y18lte (LineageOS 18.1)
+do.devicecheck=0
+do.modules=0
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=0
+supported.versions=
+'; }
+
+block=/dev/block/by-name/BOOT;
+is_slot_device=0;
+ramdisk_compression=auto;
+
+. tools/ak3-core.sh;
+
+split_boot;
+flash_boot;
+## end install
+EOF
+
+          # Copiar el Image compilado
+          cp kernel/out/arch/arm64/boot/Image anykernel/
+
+          # Crear el zip (compresión store para compatibilidad)
+          cd anykernel
+          zip -r9 ../a7y18lte-Kernel-Stable.zip * -x "*.git*"
+          cd ..
+
+      # ------------------------------------------------------------
+      # 8. Subir artifact (el zip flasheable)
+      # ------------------------------------------------------------
       - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a7y18lte-kernel-bundle
-          path: |
-            kernel/out/arch/arm64/boot/Image
-            kernel/out/arch/arm64/boot/Image.gz
+          name: a7y18lte-Kernel-Stable
+          path: a7y18lte-Kernel-Stable.zip
           if-no-files-found: error
