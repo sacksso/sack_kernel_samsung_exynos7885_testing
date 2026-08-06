@@ -1,4 +1,20 @@
-name: 🔥 Build Kernel OC (LITTLE 1690 + BIG 2288 + GPU 1196) + Verificación
+name: Build Kernel OC UNSAFE TEST (LITTLE 1690 + BIG 2288 + GPU 1300)
+
+# ⚠️ SOLO PARA TESTEO CONTROLADO ⚠️
+# Esta build reintroduce a propósito el overclock que ya confirmamos
+# sin respaldo en la tabla de calibración real (LUT):
+#   - CPU LITTLE 1690000 (SOD real: 1599000, +91 MHz sin datos)
+#   - CPU BIG    2288000 (SOD real: 2192666, +95 MHz sin datos)
+#   - GPU        1300000 (SOD real: 1196000, sin nombre de nivel real)
+# El termal se deja en 70°C de fábrica A PROPOSITO (no en 65°C) para
+# que el test sea comparable al fallo original - la única variable
+# que cambia respecto a la vez que se colgó es haber sacado FKM/htk
+# tweaks. Si le agregamos también más margen térmico, ya no sabemos
+# si un resultado positivo es por sacar el kernel manager o por el
+# margen extra.
+#
+# NO usar esta build como kernel diario. Es para juntar logs y
+# volver al kernel seguro (el que ya tenés de backup) después.
 
 on:
   workflow_dispatch:
@@ -12,11 +28,11 @@ jobs:
       # ============================================================
       # CHECKOUTS
       # ============================================================
-      - name: Checkout del kernel (TU REPOSITORIO)
+      - name: Checkout del kernel
         uses: actions/checkout@v4
         with:
-          repository: sacksso/sack_kernel_samsung_exynos7885_testing  # ← CAMBIA ESTO
-          ref: treeui_treble  # o lineage-18.1, según tu rama
+          repository: exynos7885-dev/kernel_samsung_exynos7885
+          ref: lineage-18.1
           path: kernel
           fetch-depth: 1
 
@@ -36,11 +52,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev \
-            libncurses-dev git-core zip \
-            gcc-arm-linux-gnueabi perl
+            libncurses-dev git-core zip gcc-arm-linux-gnueabi python3
 
       # ============================================================
-      # PARCHES DE COMPILACIÓN (OBLIGATORIOS)
+      # PARCHES DE COMPILACIÓN (obligatorios, no tocan OC)
       # ============================================================
       - name: Fix decon_clocks_table
         working-directory: kernel
@@ -58,40 +73,23 @@ jobs:
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # OVERCLOCK CPU: LITTLE 1690 + BIG 2288 (exynos-acme.c)
+      # ⚠️ OC INSEGURO DE CPU - SOLO TEST
+      # LITTLE y BIG por encima de sus niveles SOD reales confirmados
+      # en cmucal-vclklut.c (1599000 y 2192666 respectivamente).
       # ============================================================
-      - name: Apply CPU overclock (LITTLE 1690, BIG 2288) in exynos-acme.c
+      - name: "[TEST] Apply CPU overclock LITTLE 1690 + BIG 2288"
         working-directory: kernel
         run: |
           perl -0777 -pi -e '
           s/domain->max_freq = cal_dfs_get_max_freq\(domain->cal_id\);\s*domain->min_freq = cal_dfs_get_min_freq\(domain->cal_id\);/if (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else if (domain->id == 1) {\n\t\tdomain->max_freq = 2288000;\n\t\tdomain->min_freq = 728000;\n\t} else {\n\t\tdomain->max_freq = cal_dfs_get_max_freq(domain->cal_id);\n\t\tdomain->min_freq = cal_dfs_get_min_freq(domain->cal_id);\n\t}/s
           ' drivers/cpufreq/exynos-acme.c
-          echo "✅ Overclock CPU aplicado: LITTLE → 1690 MHz, BIG → 2288 MHz"
-          grep -A12 "domain->id" drivers/cpufreq/exynos-acme.c
+          echo "⚠️ [TEST] CPU: LITTLE -> 1690000, BIG -> 2288000 (sin respaldo en LUT)"
+          grep -A12 "domain->id == 0" drivers/cpufreq/exynos-acme.c
 
       # ============================================================
-      # MODIFICAR DEVICE TREE (exynos7885.dtsi) para forzar max-freq
+      # ⚠️ OC INSEGURO DE GPU - SOLO TEST (vuelve a 1300000, no 1196000)
       # ============================================================
-      - name: Modificar Device Tree para forzar max-freq
-        working-directory: kernel
-        run: |
-          DTS_FILE="arch/arm64/boot/dts/exynos/exynos7885.dtsi"
-          if [ -f "$DTS_FILE" ]; then
-            # Insertar max-freq en domain@0 (LITTLE)
-            sed -i '/domain@0 {/,/};/ s/min-freq = <449000>;/min-freq = <208000>;\n\t\tmax-freq = <1690000>;/' "$DTS_FILE"
-            # Insertar max-freq en domain@1 (BIG)
-            sed -i '/domain@1 {/,/};/ s/min-freq = <936000>;/min-freq = <728000>;\n\t\tmax-freq = <2288000>;/' "$DTS_FILE"
-            echo "✅ DTS modificado para forzar max-freq"
-            grep -A5 "domain@0" "$DTS_FILE" | head -10
-            grep -A5 "domain@1" "$DTS_FILE" | head -10
-          else
-            echo "⚠️ No se encontró exynos7885.dtsi, omitiendo"
-          fi
-
-      # ============================================================
-      # CORRECCIÓN DE GPU: tabla real de 5 niveles (máximo 1196 MHz)
-      # ============================================================
-      - name: Aplicar tabla real de GPU (5 niveles, máximo 1196000 kHz)
+      - name: "[TEST] Apply GPU overclock 1300000"
         working-directory: kernel
         run: |
           MALI_DTS=$(find arch/arm64/boot/dts -name "exynos7885-mali.dtsi" | head -1)
@@ -99,23 +97,32 @@ jobs:
             echo "❌ ERROR: No se encontró exynos7885-mali.dtsi"
             exit 1
           fi
-          perl -0777 -pi -e '
-            s/gpu_dvfs_table\s*=\s*<[^>]*>;/gpu_dvfs_table = <
-              1196000 98 100 1 1794000 1586000 0
-               949000 95 100 1 1794000 1586000 0
-               747500 90 100 1 1352000  757000 0
-               550333 85  95 1  676000  757000 0
-               301000 70  90 1  420000  449000 0
-            >;/s;
-            s/gpu_max_clock\s*=\s*<[^>]*>;/gpu_max_clock = <1196000>;/;
-            s/gpu_max_clock_limit\s*=\s*<[^>]*>;/gpu_max_clock_limit = <1196000>;/;
-          ' "$MALI_DTS"
-          echo "✅ GPU configurada con niveles reales: 1196000, 949000, 747500, 550333, 301000"
+          sed -i 's/gpu_max_clock = <[0-9]*>;/gpu_max_clock = <1300000>;/' "$MALI_DTS"
+          sed -i 's/gpu_max_clock_limit = <[0-9]*>;/gpu_max_clock_limit = <1300000>;/' "$MALI_DTS"
+          echo "⚠️ [TEST] GPU max clock -> 1300000 (sin nombre de nivel real en LUT)"
+
+      # (Termal NO se toca: se queda en 70°C de fábrica, a propósito,
+      # para que el único cambio respecto al intento anterior sea
+      # sacar FKM/htk tweaks - ver nota arriba.)
 
       # ============================================================
-      # COMPILACIÓN CON PARÁMETRO DE ARRANQUE PARA FORZAR OC
+      # LOGGING PERSISTENTE (pstore/ramoops) - clave para este test
       # ============================================================
-      - name: Compilar kernel con cmdline para forzar OC
+      # Si el equipo se cuelga de nuevo, un logcat/dmesg normal no
+      # sirve porque hay que estar respondiendo para pedirlo. pstore
+      # reserva un pedazo de RAM que sobrevive a un reset (aunque no
+      # a un corte total de batería), y vuelca ahí el buffer del
+      # kernel antes de morir. Confirmá que sigue habilitado:
+      - name: Verificar CONFIG_PSTORE / CONFIG_PSTORE_RAMOOPS
+        working-directory: kernel
+        run: |
+          echo "=== defconfig ==="
+          grep -i "PSTORE" arch/arm64/configs/lineage_a7y18lte_defconfig || echo "⚠️ No aparece PSTORE en el defconfig - los logs post-cuelgue van a ser mas dificiles de conseguir"
+
+      # ============================================================
+      # COMPILACIÓN
+      # ============================================================
+      - name: Compilar kernel
         working-directory: kernel
         run: |
           export ARCH=arm64
@@ -123,14 +130,9 @@ jobs:
           export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
           export KCFLAGS="-Wno-error=misleading-indentation"
-          # Añadir parámetro de arranque para forzar frecuencias máximas
           make O=out lineage_a7y18lte_defconfig
-          scripts/config --file out/.config --set-str CONFIG_CMDLINE "cpufreq.max_freq_little=1690000 cpufreq.max_freq_big=2288000"
           make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS"
 
-      # ============================================================
-      # VERIFICAR IMAGE
-      # ============================================================
       - name: Verificar Image
         working-directory: kernel
         run: |
@@ -138,11 +140,10 @@ jobs:
             echo "❌ ERROR: No se generó Image"
             exit 1
           fi
-          echo "✅ Image generado correctamente"
           ls -lh out/arch/arm64/boot/Image*
 
       # ============================================================
-      # EMPAQUETADO CON AnyKernel3
+      # EMPAQUETADO
       # ============================================================
       - name: Checkout AnyKernel3
         uses: actions/checkout@v4
@@ -152,39 +153,54 @@ jobs:
           fetch-depth: 1
 
       - name: Copiar Image a AnyKernel3
-        run: |
-          cp kernel/out/arch/arm64/boot/Image anykernel3/Image
-          echo "Image copiado correctamente"
+        run: cp kernel/out/arch/arm64/boot/Image anykernel3/Image
 
-      - name: Crear build-info.txt con instrucciones de verificación
+      - name: Crear build-info.txt
         run: |
           cat > anykernel3/build-info.txt << 'EOF'
-          ========================================
-          Kernel OC (LITTLE 1690, BIG 2288, GPU 1196)
-          ========================================
-          Fecha: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          ========================================
-          INSTRUCCIONES DE VERIFICACIÓN:
-          Después de flashear, ejecuta en terminal (con su):
-            1. dmesg | grep -i "cpufreq\|acme" | tail -20
-            2. cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
-            3. cat /sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq
-            4. cat /sys/kernel/gpu/gpu_max_clock
-          Deberías ver: 1690000, 2288000, 1196000
-          ========================================
+          ============================================================
+          ⚠️⚠️⚠️  BUILD DE TESTEO - NO ES PARA USO DIARIO  ⚠️⚠️⚠️
+          ============================================================
+          Este kernel tiene overclock SIN respaldo en la tabla de
+          calibración real del chip (LUT):
+            CPU LITTLE: 1690 MHz (real SOD: 1599 MHz)
+            CPU BIG:    2288 MHz (real SOD: 2192.666 MHz)
+            GPU:        1300 MHz (real SOD: 1196 MHz)
+          ============================================================
+          Objetivo del test: confirmar si el cuelgue original (pantalla
+          no responde al despertar, equipo caliente tras 30-50 min de
+          juego) era causado por conflicto con FKM/htk tweaks o si es
+          un problema real de voltaje insuficiente en estos escalones.
+          ============================================================
+          PROTOCOLO DE TEST:
+          1. Confirmar que FKM/htk tweaks estan DESINSTALADOS (no solo
+             deshabilitados).
+          2. Jugar 30-50 min hasta que el equipo supere los 50°C.
+          3. Apagar pantalla, esperar ~10 segundos, intentar despertar.
+          4. Repetir 2-3 veces en sesiones distintas - un solo intento
+             sin cuelgue no es evidencia suficiente, el fallo original
+             era intermitente/dependiente de temperatura.
+          ============================================================
+          SI SE CUELGA:
+          1. Reset forzado (Power + Vol Down).
+          2. ANTES de hacer cualquier otra cosa, revisar
+             /sys/fs/pstore/ (puede necesitar root/TWRP) - el log del
+             kernel de justo antes del cuelgue puede estar ahi, y a
+             veces se limpia solo en el siguiente boot exitoso.
+          3. Volver al kernel seguro de backup.
+          ============================================================
           EOF
-          cat anykernel3/build-info.txt
 
       - name: Crear ZIP flasheable
         run: |
           cd anykernel3
-          zip -r9 ../kernel-oc-big2288-verif.zip . -x "*.git*"
+          zip -r9 ../a7y18lte-OC-UNSAFE-TEST.zip . -x "*.git*"
           cd ..
-          echo "✅ ZIP creado: kernel-oc-big2288-verif.zip"
+          ls -lh a7y18lte-OC-UNSAFE-TEST.zip
 
       - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-oc-big2288-verif
-          path: kernel-oc-big2288-verif.zip
+          name: a7y18lte-OC-UNSAFE-TEST
+          path: a7y18lte-OC-UNSAFE-TEST.zip
           if-no-files-found: error
