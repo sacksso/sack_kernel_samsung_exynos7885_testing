@@ -1,4 +1,4 @@
-name: 🔥 Build Kernel OC (LITTLE 1690 + BIG 2288 + GPU 1196) + AnyKernel3
+name: 🔥 Build Kernel OC (LITTLE 1690 + BIG 2288 + GPU 1196) + Verificación
 
 on:
   workflow_dispatch:
@@ -12,11 +12,11 @@ jobs:
       # ============================================================
       # CHECKOUTS
       # ============================================================
-      - name: Checkout del kernel
+      - name: Checkout del kernel (TU REPOSITORIO)
         uses: actions/checkout@v4
         with:
-          repository: exynos7885-dev/kernel_samsung_exynos7885
-          ref: lineage-18.1
+          repository: sacksso/sack_kernel_samsung_exynos7885_testing  # ← CAMBIA ESTO
+          ref: treeui_treble  # o lineage-18.1, según tu rama
           path: kernel
           fetch-depth: 1
 
@@ -58,7 +58,7 @@ jobs:
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # OVERCLOCK CPU: LITTLE 1690 MHz + BIG 2288 MHz
+      # OVERCLOCK CPU: LITTLE 1690 + BIG 2288 (exynos-acme.c)
       # ============================================================
       - name: Apply CPU overclock (LITTLE 1690, BIG 2288) in exynos-acme.c
         working-directory: kernel
@@ -68,6 +68,25 @@ jobs:
           ' drivers/cpufreq/exynos-acme.c
           echo "✅ Overclock CPU aplicado: LITTLE → 1690 MHz, BIG → 2288 MHz"
           grep -A12 "domain->id" drivers/cpufreq/exynos-acme.c
+
+      # ============================================================
+      # MODIFICAR DEVICE TREE (exynos7885.dtsi) para forzar max-freq
+      # ============================================================
+      - name: Modificar Device Tree para forzar max-freq
+        working-directory: kernel
+        run: |
+          DTS_FILE="arch/arm64/boot/dts/exynos/exynos7885.dtsi"
+          if [ -f "$DTS_FILE" ]; then
+            # Insertar max-freq en domain@0 (LITTLE)
+            sed -i '/domain@0 {/,/};/ s/min-freq = <449000>;/min-freq = <208000>;\n\t\tmax-freq = <1690000>;/' "$DTS_FILE"
+            # Insertar max-freq en domain@1 (BIG)
+            sed -i '/domain@1 {/,/};/ s/min-freq = <936000>;/min-freq = <728000>;\n\t\tmax-freq = <2288000>;/' "$DTS_FILE"
+            echo "✅ DTS modificado para forzar max-freq"
+            grep -A5 "domain@0" "$DTS_FILE" | head -10
+            grep -A5 "domain@1" "$DTS_FILE" | head -10
+          else
+            echo "⚠️ No se encontró exynos7885.dtsi, omitiendo"
+          fi
 
       # ============================================================
       # CORRECCIÓN DE GPU: tabla real de 5 niveles (máximo 1196 MHz)
@@ -80,8 +99,6 @@ jobs:
             echo "❌ ERROR: No se encontró exynos7885-mali.dtsi"
             exit 1
           fi
-          echo "📄 Modificando $MALI_DTS"
-
           perl -0777 -pi -e '
             s/gpu_dvfs_table\s*=\s*<[^>]*>;/gpu_dvfs_table = <
               1196000 98 100 1 1794000 1586000 0
@@ -93,15 +110,12 @@ jobs:
             s/gpu_max_clock\s*=\s*<[^>]*>;/gpu_max_clock = <1196000>;/;
             s/gpu_max_clock_limit\s*=\s*<[^>]*>;/gpu_max_clock_limit = <1196000>;/;
           ' "$MALI_DTS"
-
           echo "✅ GPU configurada con niveles reales: 1196000, 949000, 747500, 550333, 301000"
-          echo "   Máximo: 1196000 kHz (1.196 GHz)"
-          grep -A8 "gpu_dvfs_table" "$MALI_DTS"
 
       # ============================================================
-      # COMPILACIÓN
+      # COMPILACIÓN CON PARÁMETRO DE ARRANQUE PARA FORZAR OC
       # ============================================================
-      - name: Compilar kernel
+      - name: Compilar kernel con cmdline para forzar OC
         working-directory: kernel
         run: |
           export ARCH=arm64
@@ -109,7 +123,9 @@ jobs:
           export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
           export KCFLAGS="-Wno-error=misleading-indentation"
+          # Añadir parámetro de arranque para forzar frecuencias máximas
           make O=out lineage_a7y18lte_defconfig
+          scripts/config --file out/.config --set-str CONFIG_CMDLINE "cpufreq.max_freq_little=1690000 cpufreq.max_freq_big=2288000"
           make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS"
 
       # ============================================================
@@ -138,27 +154,23 @@ jobs:
       - name: Copiar Image a AnyKernel3
         run: |
           cp kernel/out/arch/arm64/boot/Image anykernel3/Image
-          echo "Image copiado correctamente a AnyKernel3"
+          echo "Image copiado correctamente"
 
-      - name: Crear build-info.txt
+      - name: Crear build-info.txt con instrucciones de verificación
         run: |
           cat > anykernel3/build-info.txt << 'EOF'
           ========================================
-          a7y18lte Kernel con OC real (CPU + GPU)
+          Kernel OC (LITTLE 1690, BIG 2288, GPU 1196)
           ========================================
-          Dispositivo: Samsung Galaxy A7 2018 (a7y18lte)
-          Modelo: SM-A750F/FN/G
-          Kernel: Linux 4.4.302
-          Compilador: GCC 6.4.1
           Fecha: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          Commit: $(git --git-dir=kernel/.git rev-parse --short HEAD 2>/dev/null || echo "unknown")
           ========================================
-          Overclocks aplicados:
-            CPU LITTLE (Cortex-A53): 1690 MHz (empírico)
-            CPU BIG   (Cortex-A73): 2288 MHz (prueba, supera ASV)
-            GPU (Mali-G71 MP2):     1196 MHz (techo físico real)
-          ========================================
-          Este ZIP contiene el kernel con overclock para pruebas.
+          INSTRUCCIONES DE VERIFICACIÓN:
+          Después de flashear, ejecuta en terminal (con su):
+            1. dmesg | grep -i "cpufreq\|acme" | tail -20
+            2. cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+            3. cat /sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq
+            4. cat /sys/kernel/gpu/gpu_max_clock
+          Deberías ver: 1690000, 2288000, 1196000
           ========================================
           EOF
           cat anykernel3/build-info.txt
@@ -166,16 +178,13 @@ jobs:
       - name: Crear ZIP flasheable
         run: |
           cd anykernel3
-          zip -r9 ../kernel-oc-big2288.zip . -x "*.git*"
+          zip -r9 ../kernel-oc-big2288-verif.zip . -x "*.git*"
           cd ..
-          echo "✅ ZIP creado: kernel-oc-big2288.zip"
+          echo "✅ ZIP creado: kernel-oc-big2288-verif.zip"
 
-      # ============================================================
-      # SUBIR ARTIFACT
-      # ============================================================
       - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-oc-big2288
-          path: kernel-oc-big2288.zip
+          name: kernel-oc-big2288-verif
+          path: kernel-oc-big2288-verif.zip
           if-no-files-found: error
