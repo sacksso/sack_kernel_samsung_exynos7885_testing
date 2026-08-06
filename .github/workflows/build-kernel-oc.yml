@@ -1,4 +1,4 @@
-name: Build Kernel OC (LITTLE 1690 + GPU 1.2GHz Real) + AnyKernel3
+name: 🔥 Build Kernel OC (LITTLE 1690 + BIG 2288 + GPU 1196) + AnyKernel3
 
 on:
   workflow_dispatch:
@@ -35,16 +35,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            bc \
-            bison \
-            flex \
-            libssl-dev \
-            libncurses-dev \
-            git-core \
-            zip \
-            gcc-arm-linux-gnueabi \
-            perl
+            build-essential bc bison flex libssl-dev \
+            libncurses-dev git-core zip \
+            gcc-arm-linux-gnueabi perl
 
       # ============================================================
       # PARCHES DE COMPILACIÓN (OBLIGATORIOS)
@@ -65,19 +58,19 @@ jobs:
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # OVERCLOCK CPU: SOLO LITTLE (1690 MHz)
+      # OVERCLOCK CPU: LITTLE 1690 MHz + BIG 2288 MHz
       # ============================================================
-      - name: Apply LITTLE CPU overclock (1690 MHz) in exynos-acme.c
+      - name: Apply CPU overclock (LITTLE 1690, BIG 2288) in exynos-acme.c
         working-directory: kernel
         run: |
           perl -0777 -pi -e '
-          s/domain->max_freq = cal_dfs_get_max_freq\(domain->cal_id\);\s*domain->min_freq = cal_dfs_get_min_freq\(domain->cal_id\);/if (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else {\n\t\tdomain->max_freq = cal_dfs_get_max_freq(domain->cal_id);\n\t\tdomain->min_freq = cal_dfs_get_min_freq(domain->cal_id);\n\t}/s
+          s/domain->max_freq = cal_dfs_get_max_freq\(domain->cal_id\);\s*domain->min_freq = cal_dfs_get_min_freq\(domain->cal_id\);/if (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else if (domain->id == 1) {\n\t\tdomain->max_freq = 2288000;\n\t\tdomain->min_freq = 728000;\n\t} else {\n\t\tdomain->max_freq = cal_dfs_get_max_freq(domain->cal_id);\n\t\tdomain->min_freq = cal_dfs_get_min_freq(domain->cal_id);\n\t}/s
           ' drivers/cpufreq/exynos-acme.c
-          echo "✅ Overclock LITTLE CPU aplicado a 1690 MHz (BIG se mantiene stock)"
-          grep -A8 "domain->id == 0" drivers/cpufreq/exynos-acme.c
+          echo "✅ Overclock CPU aplicado: LITTLE → 1690 MHz, BIG → 2288 MHz"
+          grep -A12 "domain->id" drivers/cpufreq/exynos-acme.c
 
       # ============================================================
-      # OVERCLOCK GPU REAL: TABLA DE 5 NIVELES (1.196 GHz MÁXIMO)
+      # CORRECCIÓN DE GPU: tabla real de 5 niveles (máximo 1196 MHz)
       # ============================================================
       - name: Aplicar tabla real de GPU (5 niveles, máximo 1196000 kHz)
         working-directory: kernel
@@ -89,10 +82,7 @@ jobs:
           fi
           echo "📄 Modificando $MALI_DTS"
 
-          # Reemplazar la tabla gpu_dvfs_table completa con los 5 niveles reales del CAL
-          # y ajustar gpu_max_clock / gpu_max_clock_limit a 1196000
           perl -0777 -pi -e '
-            # Reemplazar bloque gpu_dvfs_table = < ... >; por la nueva tabla
             s/gpu_dvfs_table\s*=\s*<[^>]*>;/gpu_dvfs_table = <
               1196000 98 100 1 1794000 1586000 0
                949000 95 100 1 1794000 1586000 0
@@ -100,8 +90,6 @@ jobs:
                550333 85  95 1  676000  757000 0
                301000 70  90 1  420000  449000 0
             >;/s;
-
-            # Ajustar gpu_max_clock y gpu_max_clock_limit
             s/gpu_max_clock\s*=\s*<[^>]*>;/gpu_max_clock = <1196000>;/;
             s/gpu_max_clock_limit\s*=\s*<[^>]*>;/gpu_max_clock_limit = <1196000>;/;
           ' "$MALI_DTS"
@@ -109,14 +97,6 @@ jobs:
           echo "✅ GPU configurada con niveles reales: 1196000, 949000, 747500, 550333, 301000"
           echo "   Máximo: 1196000 kHz (1.196 GHz)"
           grep -A8 "gpu_dvfs_table" "$MALI_DTS"
-
-      # ============================================================
-      # (OPCIONAL) Eliminar tabla mif-perf (no necesaria para overclock real)
-      # ============================================================
-      - name: Eliminar modificación mif-perf (innecesaria)
-        working-directory: kernel
-        run: |
-          echo "✅ Se omite la modificación de mif-perf porque no afecta al overclock real de GPU/CPU"
 
       # ============================================================
       # COMPILACIÓN
@@ -133,7 +113,7 @@ jobs:
           make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS"
 
       # ============================================================
-      # VERIFICAR SALIDA
+      # VERIFICAR IMAGE
       # ============================================================
       - name: Verificar Image
         working-directory: kernel
@@ -164,25 +144,21 @@ jobs:
         run: |
           cat > anykernel3/build-info.txt << 'EOF'
           ========================================
-          a7y18lte OC Kernel Build Information
+          a7y18lte Kernel con OC real (CPU + GPU)
           ========================================
-          Device: Samsung Galaxy A7 2018 (a7y18lte)
-          Model: SM-A750F/FN/G
+          Dispositivo: Samsung Galaxy A7 2018 (a7y18lte)
+          Modelo: SM-A750F/FN/G
           Kernel: Linux 4.4.302
-          Compiler: GCC 6.4.1
-          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Compilador: GCC 6.4.1
+          Fecha: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
           Commit: $(git --git-dir=kernel/.git rev-parse --short HEAD 2>/dev/null || echo "unknown")
           ========================================
-          CPU Overclock:
-            LITTLE (Cortex-A53): 1690 MHz (techo real del binning)
-            BIG (Cortex-A73): 2184 MHz (stock, sin overclock)
+          Overclocks aplicados:
+            CPU LITTLE (Cortex-A53): 1690 MHz (empírico)
+            CPU BIG   (Cortex-A73): 2288 MHz (prueba, supera ASV)
+            GPU (Mali-G71 MP2):     1196 MHz (techo físico real)
           ========================================
-          GPU Overclock (Mali-G71 MP2):
-            Niveles reales: 1196, 949, 747, 550, 301 MHz
-            Máximo: 1196 MHz (1.196 GHz) - techo físico del silicio
-          ========================================
-          Este ZIP contiene el kernel compilado con overclock real
-          y estable, validado contra el código fuente del CAL.
+          Este ZIP contiene el kernel con overclock para pruebas.
           ========================================
           EOF
           cat anykernel3/build-info.txt
@@ -190,10 +166,9 @@ jobs:
       - name: Crear ZIP flasheable
         run: |
           cd anykernel3
-          zip -r9 ../a7y18lte-OC-REAL-GPU-CPU.zip . -x "*.git*"
+          zip -r9 ../kernel-oc-big2288.zip . -x "*.git*"
           cd ..
-          echo "✅ ZIP creado correctamente"
-          ls -lh a7y18lte-OC-REAL-GPU-CPU.zip
+          echo "✅ ZIP creado: kernel-oc-big2288.zip"
 
       # ============================================================
       # SUBIR ARTIFACT
@@ -201,6 +176,6 @@ jobs:
       - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a7y18lte-OC-REAL-GPU-CPU
-          path: a7y18lte-OC-REAL-GPU-CPU.zip
+          name: kernel-oc-big2288
+          path: kernel-oc-big2288.zip
           if-no-files-found: error
