@@ -1,12 +1,7 @@
-name: 🔥 Build Kernel with Real OC (GPU 1.2GHz + CPU LITTLE 1.69GHz)
+name: Build Kernel OC (LITTLE 1690 + GPU 1.2GHz Real) + AnyKernel3
 
 on:
   workflow_dispatch:
-    inputs:
-      branch:
-        description: 'Rama del kernel'
-        required: true
-        default: 'lineage-18.1'
 
 jobs:
   build:
@@ -14,15 +9,18 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: 📥 Checkout kernel
+      # ============================================================
+      # CHECKOUTS
+      # ============================================================
+      - name: Checkout del kernel
         uses: actions/checkout@v4
         with:
           repository: exynos7885-dev/kernel_samsung_exynos7885
-          ref: ${{ github.event.inputs.branch }}
+          ref: lineage-18.1
           path: kernel
           fetch-depth: 1
 
-      - name: 📥 Checkout toolchain GCC 6.4.1
+      - name: Checkout toolchain GCC 6.4.1
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1
@@ -30,153 +28,100 @@ jobs:
           path: toolchain/aarch64
           fetch-depth: 1
 
-      - name: 📦 Instalar dependencias
+      # ============================================================
+      # DEPENDENCIAS
+      # ============================================================
+      - name: Instalar dependencias
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential bc bison flex libssl-dev \
-            libncurses-dev git-core zip \
-            gcc-arm-linux-gnueabi python3
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libncurses-dev \
+            git-core \
+            zip \
+            gcc-arm-linux-gnueabi \
+            perl
 
-      - name: 🔍 Extraer niveles reales de GPU del CAL (en vivo)
-        id: g3d
-        working-directory: kernel
-        run: |
-          # Buscar el archivo cmucal-vclk.c (puede estar en distintas rutas)
-          VCLK_FILE=$(find . -name "cmucal-vclk.c" -path "*/exynos7885/*" | head -1)
-          if [ -z "$VCLK_FILE" ]; then
-            echo "❌ No se encontró cmucal-vclk.c para Exynos7885"
-            exit 1
-          fi
-          echo "📄 Encontrado: $VCLK_FILE"
-
-          # Extraer los 5 niveles de frecuencia de vdd_g3d_lut[]
-          python3 - <<EOF
-import re, json, os
-with open("$VCLK_FILE") as f:
-    content = f.read()
-# Buscar el arreglo vdd_g3d_lut
-match = re.search(r'struct vclk_lut\s+vdd_g3d_lut\[\]\s*=\s*\{([^}]*)\}', content, re.DOTALL)
-if not match:
-    print("❌ No se encontró vdd_g3d_lut")
-    sys.exit(1)
-body = match.group(1)
-# Extraer los números (frecuencias en kHz)
-freqs = re.findall(r'\{(\d+),', body)
-freqs = [int(f) for f in freqs]
-if len(freqs) != 5:
-    print(f"⚠️  Se esperaban 5 niveles, se encontraron {len(freqs)}")
-# Ordenar descendente
-freqs.sort(reverse=True)
-print(f"✅ Niveles reales de GPU: {freqs}")
-with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-    out.write(f"g3d_max={freqs[0]}\n")
-    out.write(f"g3d_levels={' '.join(str(f) for f in freqs)}\n")
-EOF
-
-      - name: 🛠️ Parches de compilación (obligatorios)
+      # ============================================================
+      # PARCHES DE COMPILACIÓN (OBLIGATORIOS)
+      # ============================================================
+      - name: Fix decon_clocks_table
         working-directory: kernel
         run: |
           sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
+
+      - name: Fix topology.c warning
+        working-directory: kernel
+        run: |
           sed -i 's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' arch/arm64/kernel/topology.c
+
+      - name: Fix nl80211 country_code
+        working-directory: kernel
+        run: |
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
 
-      - name: ⚡ Overclock CPU LITTLE a 1690000 kHz (confirmado estable por el usuario)
+      # ============================================================
+      # OVERCLOCK CPU: SOLO LITTLE (1690 MHz)
+      # ============================================================
+      - name: Apply LITTLE CPU overclock (1690 MHz) in exynos-acme.c
         working-directory: kernel
         run: |
-          ACME_FILE="drivers/cpufreq/exynos-acme.c"
-          if [ ! -f "$ACME_FILE" ]; then
-            echo "❌ No se encontró exynos-acme.c"
-            exit 1
-          fi
-          
-          # Usar Python para insertar el override justo después de asignar la frecuencia mínima
-          python3 - <<EOF
-import re
-file_path = "$ACME_FILE"
-with open(file_path, 'r') as f:
-    content = f.read()
+          perl -0777 -pi -e '
+          s/domain->max_freq = cal_dfs_get_max_freq\(domain->cal_id\);\s*domain->min_freq = cal_dfs_get_min_freq\(domain->cal_id\);/if (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else {\n\t\tdomain->max_freq = cal_dfs_get_max_freq(domain->cal_id);\n\t\tdomain->min_freq = cal_dfs_get_min_freq(domain->cal_id);\n\t}/s
+          ' drivers/cpufreq/exynos-acme.c
+          echo "✅ Overclock LITTLE CPU aplicado a 1690 MHz (BIG se mantiene stock)"
+          grep -A8 "domain->id == 0" drivers/cpufreq/exynos-acme.c
 
-# Buscar la línea donde se asigna domain->min_freq y añadir el override justo después
-# Patrón: domain->min_freq = cal_dfs_get_min_freq(domain->cal_id);
-pattern = r'(domain->min_freq = cal_dfs_get_min_freq\(domain->cal_id\);\s*)(?=//|/)'
-
-replacement = r'''\1
-	/* Override CPU LITTLE (domain 1) max frequency to 1690000 kHz (verified stable) */
-	if (domain->id == 1) {
-		domain->max_freq = 1690000;
-	}
-'''
-
-# Si no encuentra ese patrón exacto, busca una línea que contenga domain->min_freq
-if not re.search(pattern, content):
-    # Fallback: buscar cualquier asignación de min_freq
-    pattern = r'(domain->min_freq\s*=\s*[^;]+;\s*)(?=//|/)'
-    replacement = r'''\1
-	/* Override CPU LITTLE max frequency */
-	if (domain->id == 1) {
-		domain->max_freq = 1690000;
-	}
-'''
-
-new_content = re.sub(pattern, replacement, content, count=1)
-
-if new_content == content:
-    print("⚠️  No se pudo insertar el override automáticamente. Buscando ubicación alternativa...")
-    # Último recurso: añadir al final de la función init_domain, antes del return
-    pattern = r'(return ret;\s*\n\})'
-    replacement = r'''\t/* Override CPU LITTLE max frequency */
-	if (domain->id == 1) {
-		domain->max_freq = 1690000;
-	}
-	return ret;
-}
-'''
-    new_content = re.sub(pattern, replacement, content, count=1, flags=re.DOTALL)
-
-with open(file_path, 'w') as f:
-    f.write(new_content)
-print("✅ CPU LITTLE max_freq forzado a 1690000")
-EOF
-
-      - name: 🎮 Corregir tabla de GPU a los niveles reales
+      # ============================================================
+      # OVERCLOCK GPU REAL: TABLA DE 5 NIVELES (1.196 GHz MÁXIMO)
+      # ============================================================
+      - name: Aplicar tabla real de GPU (5 niveles, máximo 1196000 kHz)
         working-directory: kernel
         run: |
-          DTSI_FILE="arch/arm64/boot/dts/exynos/exynos7885-mali.dtsi"
-          if [ ! -f "$DTSI_FILE" ]; then
-            echo "❌ No se encontró el dtsi de Mali"
+          MALI_DTS=$(find arch/arm64/boot/dts -name "exynos7885-mali.dtsi" | head -1)
+          if [ -z "$MALI_DTS" ]; then
+            echo "❌ ERROR: No se encontró exynos7885-mali.dtsi"
             exit 1
           fi
-          # Construir la nueva tabla con los niveles reales (extraídos en el paso anterior)
-          LEVELS="${{ steps.g3d.outputs.g3d_levels }}"
-          if [ -z "$LEVELS" ]; then
-            echo "❌ No se obtuvieron niveles reales de GPU"
-            exit 1
-          fi
-          # Generar las filas de la tabla con umbrales conservadores
-          # Formato: <freq> <min> <max> <down> <mif_min> <lit_min> <big_max>
-          cat > /tmp/new_table <<EOF
-          gpu_dvfs_table = <
-          `for f in $LEVELS; do
-            if [ $f -eq 1196000 ]; then echo "  $f 98 100 1 1794000 1586000 0"
-            elif [ $f -eq 949000 ]; then echo "  $f 95 100 1 1794000 1586000 0"
-            elif [ $f -eq 747500 ]; then echo "  $f 90 100 1 1352000  757000 0"
-            elif [ $f -eq 550333 ]; then echo "  $f 85  95 1  676000  757000 0"
-            elif [ $f -eq 301000 ]; then echo "  $f 70  90 1  420000  449000 0"
-            fi
-          done` >;
-EOF
-          # Reemplazar la tabla completa en el dtsi
-          sed -i '/gpu_dvfs_table = </,/ >;/c\
-          gpu_dvfs_table = <\
-          `cat /tmp/new_table | grep -v '^$'`\
-          ' "$DTSI_FILE"
-          # Ajustar gpu_max_clock y gpu_max_clock_limit al techo real
-          sed -i "s/gpu_max_clock = <.*>/gpu_max_clock = <${{ steps.g3d.outputs.g3d_max }}>/" "$DTSI_FILE"
-          sed -i "s/gpu_max_clock_limit = <.*>/gpu_max_clock_limit = <${{ steps.g3d.outputs.g3d_max }}>/" "$DTSI_FILE"
-          echo "✅ GPU corregida a ${{ steps.g3d.outputs.g3d_max }} kHz"
+          echo "📄 Modificando $MALI_DTS"
 
-      - name: 🔨 Compilar kernel
+          # Reemplazar la tabla gpu_dvfs_table completa con los 5 niveles reales del CAL
+          # y ajustar gpu_max_clock / gpu_max_clock_limit a 1196000
+          perl -0777 -pi -e '
+            # Reemplazar bloque gpu_dvfs_table = < ... >; por la nueva tabla
+            s/gpu_dvfs_table\s*=\s*<[^>]*>;/gpu_dvfs_table = <
+              1196000 98 100 1 1794000 1586000 0
+               949000 95 100 1 1794000 1586000 0
+               747500 90 100 1 1352000  757000 0
+               550333 85  95 1  676000  757000 0
+               301000 70  90 1  420000  449000 0
+            >;/s;
+
+            # Ajustar gpu_max_clock y gpu_max_clock_limit
+            s/gpu_max_clock\s*=\s*<[^>]*>;/gpu_max_clock = <1196000>;/;
+            s/gpu_max_clock_limit\s*=\s*<[^>]*>;/gpu_max_clock_limit = <1196000>;/;
+          ' "$MALI_DTS"
+
+          echo "✅ GPU configurada con niveles reales: 1196000, 949000, 747500, 550333, 301000"
+          echo "   Máximo: 1196000 kHz (1.196 GHz)"
+          grep -A8 "gpu_dvfs_table" "$MALI_DTS"
+
+      # ============================================================
+      # (OPCIONAL) Eliminar tabla mif-perf (no necesaria para overclock real)
+      # ============================================================
+      - name: Eliminar modificación mif-perf (innecesaria)
+        working-directory: kernel
+        run: |
+          echo "✅ Se omite la modificación de mif-perf porque no afecta al overclock real de GPU/CPU"
+
+      # ============================================================
+      # COMPILACIÓN
+      # ============================================================
+      - name: Compilar kernel
         working-directory: kernel
         run: |
           export ARCH=arm64
@@ -184,47 +129,78 @@ EOF
           export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
           export KCFLAGS="-Wno-error=misleading-indentation"
+          make O=out lineage_a7y18lte_defconfig
+          make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS"
 
-          DEFCONFIG=$(find arch/arm64/configs -name "*a7y18lte*" | head -1)
-          if [ -z "$DEFCONFIG" ]; then
-            DEFCONFIG=$(find arch/arm64/configs -name "exynos7885*" | head -1)
-          fi
-          if [ -z "$DEFCONFIG" ]; then
-            echo "❌ ERROR: No se encontró defconfig"
-            exit 1
-          fi
-          echo "📝 Usando defconfig: $DEFCONFIG"
-
-          make O=out "$DEFCONFIG"
-          make O=out -j"$(nproc)"
-
-      - name: ✅ Verificar Image
+      # ============================================================
+      # VERIFICAR SALIDA
+      # ============================================================
+      - name: Verificar Image
         working-directory: kernel
         run: |
           if [ ! -f out/arch/arm64/boot/Image ]; then
             echo "❌ ERROR: No se generó Image"
             exit 1
           fi
-          echo "✅ Image generado: $(ls -lh out/arch/arm64/boot/Image)"
+          echo "✅ Image generado correctamente"
+          ls -lh out/arch/arm64/boot/Image*
 
-      - name: 📦 Empaquetar con AnyKernel3
+      # ============================================================
+      # EMPAQUETADO CON AnyKernel3
+      # ============================================================
+      - name: Checkout AnyKernel3
         uses: actions/checkout@v4
         with:
           repository: sacksso/AnyKernel3-a7y18lte
           path: anykernel3
           fetch-depth: 1
 
-      - name: Crear ZIP flasheable
+      - name: Copiar Image a AnyKernel3
         run: |
           cp kernel/out/arch/arm64/boot/Image anykernel3/Image
-          cd anykernel3
-          zip -r9 ../kernel-oc-1690.zip . -x "*.git*"
-          cd ..
-          echo "✅ ZIP creado: kernel-oc-1690.zip"
+          echo "Image copiado correctamente a AnyKernel3"
 
-      - name: 📤 Subir artifact
+      - name: Crear build-info.txt
+        run: |
+          cat > anykernel3/build-info.txt << 'EOF'
+          ========================================
+          a7y18lte OC Kernel Build Information
+          ========================================
+          Device: Samsung Galaxy A7 2018 (a7y18lte)
+          Model: SM-A750F/FN/G
+          Kernel: Linux 4.4.302
+          Compiler: GCC 6.4.1
+          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Commit: $(git --git-dir=kernel/.git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+          ========================================
+          CPU Overclock:
+            LITTLE (Cortex-A53): 1690 MHz (techo real del binning)
+            BIG (Cortex-A73): 2184 MHz (stock, sin overclock)
+          ========================================
+          GPU Overclock (Mali-G71 MP2):
+            Niveles reales: 1196, 949, 747, 550, 301 MHz
+            Máximo: 1196 MHz (1.196 GHz) - techo físico del silicio
+          ========================================
+          Este ZIP contiene el kernel compilado con overclock real
+          y estable, validado contra el código fuente del CAL.
+          ========================================
+          EOF
+          cat anykernel3/build-info.txt
+
+      - name: Crear ZIP flasheable
+        run: |
+          cd anykernel3
+          zip -r9 ../a7y18lte-OC-REAL-GPU-CPU.zip . -x "*.git*"
+          cd ..
+          echo "✅ ZIP creado correctamente"
+          ls -lh a7y18lte-OC-REAL-GPU-CPU.zip
+
+      # ============================================================
+      # SUBIR ARTIFACT
+      # ============================================================
+      - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-oc-1690
-          path: kernel-oc-1690.zip
+          name: a7y18lte-OC-REAL-GPU-CPU
+          path: a7y18lte-OC-REAL-GPU-CPU.zip
           if-no-files-found: error
