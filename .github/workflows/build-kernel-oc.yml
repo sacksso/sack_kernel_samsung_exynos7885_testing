@@ -1,4 +1,4 @@
-name: 🔥 Build Kernel OC (LITTLE 1690, BIG 2288, GPU 1196) - Verificado
+name: 🔥 Build Kernel OC Definitivo (LITTLE 1690, BIG 2288, GPU 1196)
 
 on:
   workflow_dispatch:
@@ -15,8 +15,8 @@ jobs:
       - name: Checkout del kernel (TU REPOSITORIO)
         uses: actions/checkout@v4
         with:
-          repository: sacksso/sack_kernel_samsung_exynos7885_testing  # ← CAMBIA ESTO
-          ref: treeui_treble  # o lineage-18.1
+          repository: sacksso/sack_kernel_samsung_exynos7885_testing
+          ref: treeui_treble
           path: kernel
           fetch-depth: 1
 
@@ -60,7 +60,7 @@ jobs:
       # ============================================================
       # OVERCLOCK CPU: LITTLE 1690 + BIG 2288 (exynos-acme.c)
       # ============================================================
-      - name: Apply CPU overclock (LITTLE 1690, BIG 2288) in exynos-acme.c
+      - name: Aplicar overclock CPU (LITTLE 1690, BIG 2288) en exynos-acme.c
         working-directory: kernel
         run: |
           perl -0777 -pi -e '
@@ -70,14 +70,13 @@ jobs:
           grep -A12 "domain->id" drivers/cpufreq/exynos-acme.c
 
       # ============================================================
-      # MODIFICAR DEVICE TREE (eliminar posibles max-freq)
+      # MODIFICAR DEVICE TREE (eliminar max-freq para priorizar código)
       # ============================================================
-      - name: Eliminar max-freq de los dominios cpufreq (para que el código tenga prioridad)
+      - name: Eliminar max-freq de los dominios cpufreq en el DTS
         working-directory: kernel
         run: |
           DTS_FILE="arch/arm64/boot/dts/exynos/exynos7885.dtsi"
           if [ -f "$DTS_FILE" ]; then
-            # Eliminar cualquier línea que contenga max-freq dentro de los dominios
             sed -i '/domain@0 {/,/};/ s/^\s*max-freq = .*;//' "$DTS_FILE"
             sed -i '/domain@1 {/,/};/ s/^\s*max-freq = .*;//' "$DTS_FILE"
             echo "✅ max-freq eliminados del DTS"
@@ -108,12 +107,11 @@ jobs:
           echo "✅ GPU configurada con niveles reales: 1196000, 949000, 747500, 550333, 301000"
 
       # ============================================================
-      # CONFIGURAR DEFCONFIG para incluir parámetros de arranque
+      # CONFIGURACIÓN DE ESTABILIDAD (Quantum Quack style)
       # ============================================================
-      - name: Añadir parámetros de arranque al defconfig
+      - name: Añadir opciones de estabilidad al defconfig
         working-directory: kernel
         run: |
-          # Buscar el defconfig correcto (probablemente lineage_a7y18lte_defconfig)
           DEFCONFIG=$(find arch/arm64/configs -name "*a7y18lte*" | head -1)
           if [ -z "$DEFCONFIG" ]; then
             DEFCONFIG=$(find arch/arm64/configs -name "exynos7885*" | head -1)
@@ -123,13 +121,20 @@ jobs:
             exit 1
           fi
           echo "📝 Modificando $DEFCONFIG"
-          # Añadir CONFIG_CMDLINE si no existe
+          # Habilitar Power Efficient Workqueue
+          if ! grep -q "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y" "$DEFCONFIG"; then
+            echo "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y" >> "$DEFCONFIG"
+          fi
+          # Desactivar auditoría y trace_printk (reducen sobrecarga)
+          sed -i 's/^CONFIG_AUDIT=y/# CONFIG_AUDIT is not set/' "$DEFCONFIG"
+          sed -i 's/^CONFIG_TRACE_PRINTK=y/# CONFIG_TRACE_PRINTK is not set/' "$DEFCONFIG"
+          # Añadir parámetros de arranque
           if ! grep -q "CONFIG_CMDLINE=" "$DEFCONFIG"; then
             echo 'CONFIG_CMDLINE="cpu_max_c1=1690000 cpu_max_c2=2288000"' >> "$DEFCONFIG"
           else
             sed -i 's/^CONFIG_CMDLINE=.*/CONFIG_CMDLINE="cpu_max_c1=1690000 cpu_max_c2=2288000"/' "$DEFCONFIG"
           fi
-          echo "✅ Parámetros de arranque añadidos"
+          echo "✅ Opciones de estabilidad y parámetros de arranque añadidos"
 
       # ============================================================
       # COMPILACIÓN
@@ -176,33 +181,46 @@ jobs:
       - name: Crear build-info.txt con instrucciones
         run: |
           cat > anykernel3/build-info.txt << 'EOF'
-          ========================================
-          Kernel OC (LITTLE 1690, BIG 2288, GPU 1196)
-          ========================================
+          ============================================================
+          Kernel OC Definitivo para a7y18lte
+          ============================================================
           Fecha: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          ========================================
-          INSTRUCCIONES DE VERIFICACIÓN:
-          Después de flashear, ejecuta en terminal (con su):
+          ============================================================
+          Overclocks aplicados:
+            CPU LITTLE (Cortex-A53): 1690 MHz (estable, empírico)
+            CPU BIG   (Cortex-A73): 2288 MHz (prueba de estabilidad)
+            GPU (Mali-G71 MP2):      1196 MHz (techo físico real)
+          ============================================================
+          Optimizaciones de estabilidad (estilo Quantum Quack):
+            - Power Efficient Workqueue activado
+            - Auditoría y trace_printk desactivados
+            - Parámetros de arranque añadidos
+          ============================================================
+          INSTRUCCIONES DE VERIFICACIÓN (después de flashear):
             1. cat /proc/cmdline | grep cpu_max
-               Deberías ver: cpu_max_c1=1690000 cpu_max_c2=2288000
+               Debe mostrar: cpu_max_c1=1690000 cpu_max_c2=2288000
             2. cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+               Debe mostrar: 1690000
             3. cat /sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq
+               Debe mostrar: 2288000
             4. cat /sys/kernel/gpu/gpu_max_clock
-          Deberías ver: 1690000, 2288000, 1196000
-          ========================================
+               Debe mostrar: 1196000
+          ============================================================
+          Si ves esos valores, ¡el overclock está funcionando!
+          ============================================================
           EOF
           cat anykernel3/build-info.txt
 
       - name: Crear ZIP flasheable
         run: |
           cd anykernel3
-          zip -r9 ../kernel-oc-verified.zip . -x "*.git*"
+          zip -r9 ../kernel-oc-definitivo.zip . -x "*.git*"
           cd ..
-          echo "✅ ZIP creado: kernel-oc-verified.zip"
+          echo "✅ ZIP creado: kernel-oc-definitivo.zip"
 
       - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-oc-verified
-          path: kernel-oc-verified.zip
+          name: kernel-oc-definitivo
+          path: kernel-oc-definitivo.zip
           if-no-files-found: error
