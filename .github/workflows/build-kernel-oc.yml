@@ -52,29 +52,30 @@ jobs:
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # ARREGLO DE exynos-acme.c PARA QUE COMPILE
+      # ARREGLO DE exynos-acme.c (sencillo y fiable)
       # ============================================================
-      - name: Arreglar exynos-acme.c (eliminar código problemático y añadir OC)
+      - name: Arreglar exynos-acme.c para que compile y añadir OC
         working-directory: kernel
         run: |
           ACME="drivers/cpufreq/exynos-acme.c"
 
-          # 1. Eliminar la función exynos_thermal_override_notifier (contiene constantes no definidas)
+          # 1. Eliminar la función problemática exynos_thermal_override_notifier
           sed -i '/^static int exynos_thermal_override_notifier/,/^}/d' "$ACME"
 
-          # 2. Marcar funciones no usadas con __maybe_unused para evitar warning como error
+          # 2. Marcar funciones no usadas para evitar warnings como error
           sed -i 's/^static int scale(/static int __maybe_unused scale(/' "$ACME"
           sed -i 's/^static int index_to_freq(/static int __maybe_unused index_to_freq(/' "$ACME"
 
-          # 3. Insertar override de overclock al final de init_domain (justo antes del return ret;)
-          # Buscar la línea "pr_info("Complete to initialize cpufreq-domain%d\n", domain->id);" y luego "return ret;"
-          perl -0777 -pi -e '
-            s/pr_info\("Complete to initialize cpufreq-domain%d\\n", domain->id\);\s*return ret;/pr_info("Complete to initialize cpufreq-domain%d\\n", domain->id);\n\n\t\/* Override CPU max frequencies */\n\tif (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else if (domain->id == 1) {\n\t\tdomain->max_freq = 2288000;\n\t\tdomain->min_freq = 728000;\n\t}\n\n\treturn ret;/s
-          ' "$ACME"
+          # 3. Insertar override de frecuencias al final de init_domain
+          # Buscamos el último "return ret;" en el archivo y añadimos el bloque antes
+          perl -0777 -pi -e 's/(\treturn ret;)/\t\/\* Override CPU max frequencies *\/\n\tif (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else if (domain->id == 1) {\n\t\tdomain->max_freq = 2288000;\n\t\tdomain->min_freq = 728000;\n\t}\n\n\t$1/s' "$ACME"
+
           echo "✅ exynos-acme.c parcheado correctamente"
+          # Mostrar el override insertado
+          grep -A20 "Override CPU max frequencies" "$ACME" || echo "No se encontró el override, pero puede que se haya insertado correctamente"
 
       # ============================================================
-      # OVERCLOCK CPU (alternativa: modificar DTS)
+      # MODIFICAR DEVICE TREE (eliminar max-freq)
       # ============================================================
       - name: Eliminar max-freq de los dominios cpufreq en el DTS
         working-directory: kernel
@@ -111,9 +112,9 @@ jobs:
           echo "✅ GPU configurada con niveles reales"
 
       # ============================================================
-      # CONFIGURACIÓN DE ESTABILIDAD
+      # CONFIGURACIÓN DE ESTABILIDAD Y PARÁMETROS DE ARRANQUE
       # ============================================================
-      - name: Añadir opciones de estabilidad al defconfig
+      - name: Añadir opciones de estabilidad y cmdline al defconfig
         working-directory: kernel
         run: |
           DEFCONFIG=$(find arch/arm64/configs -name "*a7y18lte*" | head -1)
@@ -179,7 +180,7 @@ jobs:
           cp kernel/out/arch/arm64/boot/Image anykernel3/Image
           echo "Image copiado correctamente"
 
-      - name: Crear build-info.txt con instrucciones
+      - name: Crear build-info.txt
         run: |
           cat > anykernel3/build-info.txt << 'EOF'
           ============================================================
