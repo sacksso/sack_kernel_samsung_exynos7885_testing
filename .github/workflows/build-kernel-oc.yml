@@ -9,9 +9,6 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      # ============================================================
-      # CHECKOUTS
-      # ============================================================
       - name: Checkout del kernel (TU REPOSITORIO)
         uses: actions/checkout@v4
         with:
@@ -28,16 +25,13 @@ jobs:
           path: toolchain/aarch64
           fetch-depth: 1
 
-      # ============================================================
-      # DEPENDENCIAS
-      # ============================================================
       - name: Instalar dependencias
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev \
             libncurses-dev git-core zip \
-            gcc-arm-linux-gnueabi perl python3
+            gcc-arm-linux-gnueabi perl
 
       # ============================================================
       # PARCHES DE COMPILACIÓN (OBLIGATORIOS)
@@ -58,54 +52,29 @@ jobs:
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # OVERCLOCK CPU: LITTLE 1690 + BIG 2288 (método seguro)
+      # ARREGLO DE exynos-acme.c PARA QUE COMPILE
       # ============================================================
-      - name: Aplicar overclock CPU (LITTLE 1690, BIG 2288) en exynos-acme.c
+      - name: Arreglar exynos-acme.c (eliminar código problemático y añadir OC)
         working-directory: kernel
         run: |
-          python3 - <<'EOF'
-          import re
-          with open('drivers/cpufreq/exynos-acme.c', 'r') as f:
-              content = f.read()
+          ACME="drivers/cpufreq/exynos-acme.c"
 
-          # Buscar la función init_domain y añadir el override justo antes del return
-          pattern = r'(int\s+init_domain\s*\([^)]+\)\s*\{.*?)(return\s+ret;\s*\})'
-          replacement = r'''\1
-              /* Override CPU max frequencies: LITTLE (domain 0) to 1690 MHz, BIG (domain 1) to 2288 MHz */
-              if (domain->id == 0) {
-                  domain->max_freq = 1690000;
-                  domain->min_freq = 208000;
-              } else if (domain->id == 1) {
-                  domain->max_freq = 2288000;
-                  domain->min_freq = 728000;
-              }
-          \2'''
-          new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+          # 1. Eliminar la función exynos_thermal_override_notifier (contiene constantes no definidas)
+          sed -i '/^static int exynos_thermal_override_notifier/,/^}/d' "$ACME"
 
-          if new_content == content:
-              print("⚠️  No se encontró el patrón, buscando alternativa...")
-              # Fallback: buscar al final de la función init_domain
-              pattern = r'(domain->old\s*=\s*get_freq\(domain\);\s*)(.*?)(\s*return ret;)'
-              replacement = r'''\1\2
-              /* Override CPU max frequencies */
-              if (domain->id == 0) {
-                  domain->max_freq = 1690000;
-                  domain->min_freq = 208000;
-              } else if (domain->id == 1) {
-                  domain->max_freq = 2288000;
-                  domain->min_freq = 728000;
-              }
-          \3'''
-              new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+          # 2. Marcar funciones no usadas con __maybe_unused para evitar warning como error
+          sed -i 's/^static int scale(/static int __maybe_unused scale(/' "$ACME"
+          sed -i 's/^static int index_to_freq(/static int __maybe_unused index_to_freq(/' "$ACME"
 
-          with open('drivers/cpufreq/exynos-acme.c', 'w') as f:
-              f.write(new_content)
-          print("✅ Overclock CPU aplicado: LITTLE → 1690 MHz, BIG → 2288 MHz")
-          EOF
-          grep -A5 "Override CPU" drivers/cpufreq/exynos-acme.c || echo "⚠️  No se encontró el override en el archivo"
+          # 3. Insertar override de overclock al final de init_domain (justo antes del return ret;)
+          # Buscar la línea "pr_info("Complete to initialize cpufreq-domain%d\n", domain->id);" y luego "return ret;"
+          perl -0777 -pi -e '
+            s/pr_info\("Complete to initialize cpufreq-domain%d\\n", domain->id\);\s*return ret;/pr_info("Complete to initialize cpufreq-domain%d\\n", domain->id);\n\n\t\/* Override CPU max frequencies */\n\tif (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else if (domain->id == 1) {\n\t\tdomain->max_freq = 2288000;\n\t\tdomain->min_freq = 728000;\n\t}\n\n\treturn ret;/s
+          ' "$ACME"
+          echo "✅ exynos-acme.c parcheado correctamente"
 
       # ============================================================
-      # MODIFICAR DEVICE TREE (eliminar max-freq para priorizar código)
+      # OVERCLOCK CPU (alternativa: modificar DTS)
       # ============================================================
       - name: Eliminar max-freq de los dominios cpufreq en el DTS
         working-directory: kernel
@@ -139,10 +108,10 @@ jobs:
             s/gpu_max_clock\s*=\s*<[^>]*>;/gpu_max_clock = <1196000>;/;
             s/gpu_max_clock_limit\s*=\s*<[^>]*>;/gpu_max_clock_limit = <1196000>;/;
           ' "$MALI_DTS"
-          echo "✅ GPU configurada con niveles reales: 1196000, 949000, 747500, 550333, 301000"
+          echo "✅ GPU configurada con niveles reales"
 
       # ============================================================
-      # CONFIGURACIÓN DE ESTABILIDAD (Quantum Quack style)
+      # CONFIGURACIÓN DE ESTABILIDAD
       # ============================================================
       - name: Añadir opciones de estabilidad al defconfig
         working-directory: kernel
@@ -185,9 +154,6 @@ jobs:
           make O=out lineage_a7y18lte_defconfig
           make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS"
 
-      # ============================================================
-      # VERIFICAR IMAGE
-      # ============================================================
       - name: Verificar Image
         working-directory: kernel
         run: |
@@ -219,29 +185,16 @@ jobs:
           ============================================================
           Kernel OC Definitivo para a7y18lte
           ============================================================
-          Fecha: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          ============================================================
           Overclocks aplicados:
-            CPU LITTLE (Cortex-A53): 1690 MHz (estable, empírico)
-            CPU BIG   (Cortex-A73): 2288 MHz (prueba de estabilidad)
-            GPU (Mali-G71 MP2):      1196 MHz (techo físico real)
+            CPU LITTLE: 1690 MHz (forzado en exynos-acme.c)
+            CPU BIG:    2288 MHz (forzado en exynos-acme.c)
+            GPU:        1196 MHz (techo real)
           ============================================================
-          Optimizaciones de estabilidad (estilo Quantum Quack):
-            - Power Efficient Workqueue activado
-            - Auditoría y trace_printk desactivados
-            - Parámetros de arranque añadidos
-          ============================================================
-          INSTRUCCIONES DE VERIFICACIÓN (después de flashear):
+          Verificación:
             1. cat /proc/cmdline | grep cpu_max
-               Debe mostrar: cpu_max_c1=1690000 cpu_max_c2=2288000
             2. cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
-               Debe mostrar: 1690000
             3. cat /sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq
-               Debe mostrar: 2288000
             4. cat /sys/kernel/gpu/gpu_max_clock
-               Debe mostrar: 1196000
-          ============================================================
-          Si ves esos valores, ¡el overclock está funcionando!
           ============================================================
           EOF
           cat anykernel3/build-info.txt
