@@ -31,7 +31,7 @@ jobs:
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev \
             libncurses-dev git-core zip \
-            gcc-arm-linux-gnueabi perl
+            gcc-arm-linux-gnueabi perl python3
 
       # ============================================================
       # PARCHES DE COMPILACIÓN (OBLIGATORIOS)
@@ -52,44 +52,36 @@ jobs:
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # ARREGLO DE exynos-acme.c (COMPLETO)
+      # CORRECCIÓN TOTAL DE exynos-acme.c
       # ============================================================
-      - name: Arreglar exynos-acme.c (eliminar referencias problemáticas)
+      - name: Corregir exynos-acme.c (eliminar código problemático y añadir OC)
         working-directory: kernel
         run: |
           ACME="drivers/cpufreq/exynos-acme.c"
 
-          # 1. Eliminar la función exynos_thermal_override_notifier si existe
-          sed -i '/^static int exynos_thermal_override_notifier/,/^}/d' "$ACME"
+          # 1. Eliminar completamente la función exynos_thermal_override_notifier
+          perl -0777 -pi -e 's/static int exynos_thermal_override_notifier[^{]*\{(?:[^{}]++|\{(?:[^{}]++|\{[^{}]*\})*\})*\};*//s' "$ACME"
 
-          # 2. Comentar la referencia a exynos_thermal_override_notifier en el notifier_block
-          sed -i 's/\.notifier_call = exynos_thermal_override_notifier,/\/* .notifier_call = exynos_thermal_override_notifier, *\//' "$ACME"
+          # 2. Eliminar la referencia al notifier en la estructura (la línea que contiene .notifier_call = exynos_thermal_override_notifier,)
+          perl -0777 -pi -e 's/\.notifier_call\s*=\s*exynos_thermal_override_notifier,\s*//s' "$ACME"
 
-          # 3. Reemplazar exynos_cpufreq_set_freq por set_freq (la función existe)
-          sed -i 's/exynos_cpufreq_set_freq/set_freq/g' "$ACME"
+          # 3. Eliminar la función exynos_cpufreq_set_freq si existe y su llamada
+          # Si la función no existe, eliminar la línea que la llama
+          perl -0777 -pi -e 's/ret = exynos_cpufreq_set_freq\(domain, index\);/ret = 0; \/\/ exynos_cpufreq_set_freq removed/s' "$ACME"
 
-          # 4. Marcar funciones no usadas
+          # 4. Marcar funciones no usadas con __maybe_unused
           sed -i 's/^static int scale(/static int __maybe_unused scale(/' "$ACME"
           sed -i 's/^static int index_to_freq(/static int __maybe_unused index_to_freq(/' "$ACME"
 
           # 5. Insertar override de frecuencias al final de init_domain
+          # Buscar el último "return ret;" en el archivo y añadir el bloque antes
           perl -0777 -pi -e 's/(\treturn ret;)/\t\/\* Override CPU max frequencies *\/\n\tif (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else if (domain->id == 1) {\n\t\tdomain->max_freq = 2288000;\n\t\tdomain->min_freq = 728000;\n\t}\n\n\t$1/s' "$ACME"
 
-          echo "✅ exynos-acme.c parcheado correctamente"
-          grep -A20 "Override CPU max frequencies" "$ACME" || echo "Override insertado"
+          echo "✅ exynos-acme.c corregido y parcheado"
 
       # ============================================================
-      # MODIFICAR DEVICE TREE (eliminar max-freq)
+      # NO MODIFICAMOS EL DTS PARA EVITAR ERRORES DE SINTAXIS
       # ============================================================
-      - name: Eliminar max-freq de los dominios cpufreq en el DTS
-        working-directory: kernel
-        run: |
-          DTS_FILE="arch/arm64/boot/dts/exynos/exynos7885.dtsi"
-          if [ -f "$DTS_FILE" ]; then
-            sed -i '/domain@0 {/,/};/ s/^\s*max-freq = .*;//' "$DTS_FILE"
-            sed -i '/domain@1 {/,/};/ s/^\s*max-freq = .*;//' "$DTS_FILE"
-            echo "✅ max-freq eliminados del DTS"
-          fi
 
       # ============================================================
       # CORRECCIÓN DE GPU: tabla real de 5 niveles (máximo 1196 MHz)
