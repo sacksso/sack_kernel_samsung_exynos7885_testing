@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: sacksso/sack_kernel_samsung_exynos7885_testing
-          ref: treeui_treble
+          ref: lineage-18.1   # ← CAMBIADO: usa la rama correcta
           path: kernel
           fetch-depth: 1
 
