@@ -31,7 +31,7 @@ jobs:
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev \
             libncurses-dev git-core zip \
-            gcc-arm-linux-gnueabi perl python3
+            gcc-arm-linux-gnueabi perl
 
       # ============================================================
       # PARCHES DE COMPILACIÓN (OBLIGATORIOS)
@@ -52,36 +52,32 @@ jobs:
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # CORRECCIÓN TOTAL DE exynos-acme.c
+      # OVERCLOCK EN exynos-acme.c (PARCHE SEGURO)
       # ============================================================
-      - name: Corregir exynos-acme.c (eliminar código problemático y añadir OC)
+      - name: Aplicar overclock y arreglar exynos-acme.c
         working-directory: kernel
         run: |
           ACME="drivers/cpufreq/exynos-acme.c"
 
-          # 1. Eliminar completamente la función exynos_thermal_override_notifier
-          perl -0777 -pi -e 's/static int exynos_thermal_override_notifier[^{]*\{(?:[^{}]++|\{(?:[^{}]++|\{[^{}]*\})*\})*\};*//s' "$ACME"
+          # 1. Eliminar la función exynos_thermal_override_notifier
+          perl -0777 -pi -e 's/(exynos_thermal_override_notifier[^}]*})//s' "$ACME"
 
-          # 2. Eliminar la referencia al notifier en la estructura (la línea que contiene .notifier_call = exynos_thermal_override_notifier,)
-          perl -0777 -pi -e 's/\.notifier_call\s*=\s*exynos_thermal_override_notifier,\s*//s' "$ACME"
+          # 2. Eliminar la referencia a ese notifier en la estructura
+          perl -0777 -pi -e 's/\s*\.notifier_call\s*=\s*exynos_thermal_override_notifier,?//' "$ACME"
 
-          # 3. Eliminar la función exynos_cpufreq_set_freq si existe y su llamada
-          # Si la función no existe, eliminar la línea que la llama
-          perl -0777 -pi -e 's/ret = exynos_cpufreq_set_freq\(domain, index\);/ret = 0; \/\/ exynos_cpufreq_set_freq removed/s' "$ACME"
+          # 3. Eliminar el registro/desregistro del notifier (si existe)
+          perl -0777 -pi -e 's/cpufreq_(un)?register_notifier\([^,]*,\s*CPUFREQ_POLICY_NOTIFIER\s*\);//g' "$ACME"
 
-          # 4. Marcar funciones no usadas con __maybe_unused
-          sed -i 's/^static int scale(/static int __maybe_unused scale(/' "$ACME"
-          sed -i 's/^static int index_to_freq(/static int __maybe_unused index_to_freq(/' "$ACME"
+          # 4. Marcar funciones no usadas para evitar warnings como error
+          perl -0777 -pi -e 's/(static int scale\()/static int __maybe_unused scale(/' "$ACME"
+          perl -0777 -pi -e 's/(static int index_to_freq\()/static int __maybe_unused index_to_freq(/' "$ACME"
 
-          # 5. Insertar override de frecuencias al final de init_domain
-          # Buscar el último "return ret;" en el archivo y añadir el bloque antes
-          perl -0777 -pi -e 's/(\treturn ret;)/\t\/\* Override CPU max frequencies *\/\n\tif (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else if (domain->id == 1) {\n\t\tdomain->max_freq = 2288000;\n\t\tdomain->min_freq = 728000;\n\t}\n\n\t$1/s' "$ACME"
+          # 5. Insertar override de overclock en init_domain (justo después de min_freq = cal_dfs_get_min_freq)
+          perl -0777 -pi -e '
+            s/(domain->min_freq = cal_dfs_get_min_freq\(domain->cal_id\);\s*)\n/\1\n\t/* Override CPU max frequencies */\n\tif (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else if (domain->id == 1) {\n\t\tdomain->max_freq = 2288000;\n\t\tdomain->min_freq = 728000;\n\t}\n\n/s
+          ' "$ACME"
 
-          echo "✅ exynos-acme.c corregido y parcheado"
-
-      # ============================================================
-      # NO MODIFICAMOS EL DTS PARA EVITAR ERRORES DE SINTAXIS
-      # ============================================================
+          echo "✅ Overclock CPU aplicado en exynos-acme.c"
 
       # ============================================================
       # CORRECCIÓN DE GPU: tabla real de 5 niveles (máximo 1196 MHz)
@@ -108,9 +104,9 @@ jobs:
           echo "✅ GPU configurada con niveles reales"
 
       # ============================================================
-      # CONFIGURACIÓN DE ESTABILIDAD Y PARÁMETROS DE ARRANQUE
+      # CONFIGURACIÓN DE ESTABILIDAD
       # ============================================================
-      - name: Añadir opciones de estabilidad y cmdline al defconfig
+      - name: Añadir opciones de estabilidad al defconfig
         working-directory: kernel
         run: |
           DEFCONFIG=$(find arch/arm64/configs -name "*a7y18lte*" | head -1)
@@ -126,7 +122,7 @@ jobs:
           if ! grep -q "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y" "$DEFCONFIG"; then
             echo "CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y" >> "$DEFCONFIG"
           fi
-          # Desactivar auditoría y trace_printk (reducen sobrecarga)
+          # Desactivar auditoría y trace_printk
           sed -i 's/^CONFIG_AUDIT=y/# CONFIG_AUDIT is not set/' "$DEFCONFIG"
           sed -i 's/^CONFIG_TRACE_PRINTK=y/# CONFIG_TRACE_PRINTK is not set/' "$DEFCONFIG"
           # Añadir parámetros de arranque
