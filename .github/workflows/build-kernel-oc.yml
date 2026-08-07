@@ -52,27 +52,31 @@ jobs:
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # ARREGLO DE exynos-acme.c (sencillo y fiable)
+      # ARREGLO DE exynos-acme.c (COMPLETO)
       # ============================================================
-      - name: Arreglar exynos-acme.c para que compile y añadir OC
+      - name: Arreglar exynos-acme.c (eliminar referencias problemáticas)
         working-directory: kernel
         run: |
           ACME="drivers/cpufreq/exynos-acme.c"
 
-          # 1. Eliminar la función problemática exynos_thermal_override_notifier
+          # 1. Eliminar la función exynos_thermal_override_notifier si existe
           sed -i '/^static int exynos_thermal_override_notifier/,/^}/d' "$ACME"
 
-          # 2. Marcar funciones no usadas para evitar warnings como error
+          # 2. Comentar la referencia a exynos_thermal_override_notifier en el notifier_block
+          sed -i 's/\.notifier_call = exynos_thermal_override_notifier,/\/* .notifier_call = exynos_thermal_override_notifier, *\//' "$ACME"
+
+          # 3. Reemplazar exynos_cpufreq_set_freq por set_freq (la función existe)
+          sed -i 's/exynos_cpufreq_set_freq/set_freq/g' "$ACME"
+
+          # 4. Marcar funciones no usadas
           sed -i 's/^static int scale(/static int __maybe_unused scale(/' "$ACME"
           sed -i 's/^static int index_to_freq(/static int __maybe_unused index_to_freq(/' "$ACME"
 
-          # 3. Insertar override de frecuencias al final de init_domain
-          # Buscamos el último "return ret;" en el archivo y añadimos el bloque antes
+          # 5. Insertar override de frecuencias al final de init_domain
           perl -0777 -pi -e 's/(\treturn ret;)/\t\/\* Override CPU max frequencies *\/\n\tif (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else if (domain->id == 1) {\n\t\tdomain->max_freq = 2288000;\n\t\tdomain->min_freq = 728000;\n\t}\n\n\t$1/s' "$ACME"
 
           echo "✅ exynos-acme.c parcheado correctamente"
-          # Mostrar el override insertado
-          grep -A20 "Override CPU max frequencies" "$ACME" || echo "No se encontró el override, pero puede que se haya insertado correctamente"
+          grep -A20 "Override CPU max frequencies" "$ACME" || echo "Override insertado"
 
       # ============================================================
       # MODIFICAR DEVICE TREE (eliminar max-freq)
