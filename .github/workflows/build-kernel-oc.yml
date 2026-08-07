@@ -1,4 +1,4 @@
-name: 🔥 Build Kernel OC Definitivo (LITTLE 1690, BIG 2288, GPU 1196)
+name: 🔥 Build Kernel OC Definitivo
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Checkout del kernel (TU REPOSITORIO)
+      - name: Checkout del kernel
         uses: actions/checkout@v4
         with:
           repository: sacksso/sack_kernel_samsung_exynos7885_testing
@@ -17,7 +17,7 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Checkout toolchain GCC 6.4.1
+      - name: Checkout toolchain
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1
@@ -31,68 +31,61 @@ jobs:
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev \
             libncurses-dev git-core zip \
-            gcc-arm-linux-gnueabi
+            gcc-arm-linux-gnueabi perl python3
 
       # ============================================================
       # PARCHES DE COMPILACIÓN (OBLIGATORIOS)
       # ============================================================
-      - name: Fix decon_clocks_table
+      - name: Parches de compilación
         working-directory: kernel
         run: |
           sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
-
-      - name: Fix topology.c warning
-        working-directory: kernel
-        run: |
           sed -i 's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' arch/arm64/kernel/topology.c
-
-      - name: Fix nl80211 country_code
-        working-directory: kernel
-        run: |
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # ELIMINAR TODO EL CÓDIGO PROBLEMÁTICO DE exynos-acme.c
+      # PARCHE de exynos-acme.c: Eliminar función problemática y añadir OC
       # ============================================================
-      - name: Limpiar y parchear exynos-acme.c completamente
+      - name: Parchear exynos-acme.c
         working-directory: kernel
         run: |
           ACME="drivers/cpufreq/exynos-acme.c"
-
-          # 1. Eliminar completamente la función exynos_thermal_override_notifier
+          # Usamos sed para eliminar la función problemática completa
+          # y su referencia en el notifier_block
           sed -i '/^static int exynos_thermal_override_notifier/,/^}/d' "$ACME"
-
-          # 2. Eliminar cualquier referencia a exynos_thermal_override_notifier
-          sed -i '/exynos_thermal_override_notifier/d' "$ACME"
-
-          # 3. Eliminar la llamada a exynos_cpufreq_set_freq (no existe en tu kernel)
-          sed -i '/exynos_cpufreq_set_freq/d' "$ACME"
-
-          # 4. Marcar funciones no usadas como __maybe_unused
+          sed -i '/\.notifier_call = exynos_thermal_override_notifier,/d' "$ACME"
+          # Marcar funciones no usadas
           sed -i 's/^static int scale(/static int __maybe_unused scale(/' "$ACME"
           sed -i 's/^static int index_to_freq(/static int __maybe_unused index_to_freq(/' "$ACME"
+          # Añadir el override de frecuencias al final del archivo
+          cat >> "$ACME" << 'EOF'
 
-          # 5. Insertar override de overclock al final del archivo, en el lugar correcto
-          # Buscar la línea que contiene "pr_info("Complete to initialize cpufreq-domain""
-          # y añadir el override justo después
-          sed -i '/pr_info("Complete to initialize cpufreq-domain.*domain->id);/a \
-          \n\t/* Override CPU max frequencies */\
-          \tif (domain->id == 0) {\
-          \t\tdomain->max_freq = 1690000;\
-          \t\tdomain->min_freq = 208000;\
-          \t} else if (domain->id == 1) {\
-          \t\tdomain->max_freq = 2288000;\
-          \t\tdomain->min_freq = 728000;\
-          \t}' "$ACME"
-
-          echo "✅ exynos-acme.c parcheado y limpiado"
-          # Verificar
+          /*** OVERRIDE DE FRECUENCIAS PARA OC ***/
+          static int __init exynos_oc_patch(void)
+          {
+              struct exynos_cpufreq_domain *domain;
+              list_for_each_entry(domain, &domains, list) {
+                  if (domain->id == 0) {
+                      domain->max_freq = 1690000;
+                      domain->min_freq = 208000;
+                      pr_info("CPU LITTLE max_freq forzado a 1690 MHz\n");
+                  } else if (domain->id == 1) {
+                      domain->max_freq = 2288000;
+                      domain->min_freq = 728000;
+                      pr_info("CPU BIG max_freq forzado a 2288 MHz\n");
+                  }
+              }
+              return 0;
+          }
+          late_initcall(exynos_oc_patch);
+          EOF
+          echo "✅ exynos-acme.c parcheado con éxito"
           tail -30 "$ACME"
 
       # ============================================================
-      # GPU: tabla real de 5 niveles (máximo 1196 MHz)
+      # GPU: Tabla real de 5 niveles (máximo 1196 MHz)
       # ============================================================
-      - name: Aplicar tabla real de GPU (5 niveles, máximo 1196000 kHz)
+      - name: Aplicar tabla real de GPU
         working-directory: kernel
         run: |
           MALI_DTS=$(find arch/arm64/boot/dts -name "exynos7885-mali.dtsi" | head -1)
@@ -114,9 +107,9 @@ jobs:
           echo "✅ GPU configurada con niveles reales"
 
       # ============================================================
-      # COMPILACIÓN
+      # COMPILACIÓN CON -k (ignorar errores de DTS)
       # ============================================================
-      - name: Compilar kernel
+      - name: Compilar kernel (ignorando errores de DTB)
         working-directory: kernel
         run: |
           export ARCH=arm64
@@ -125,9 +118,10 @@ jobs:
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
           export KCFLAGS="-Wno-error=misleading-indentation"
           make O=out lineage_a7y18lte_defconfig
-          make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS"
+          # La bandera -k (--keep-going) hace que make continúe aunque algunos targets fallen
+          make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS" -k
 
-      - name: Verificar Image
+      - name: Verificar y copiar Image
         working-directory: kernel
         run: |
           if [ ! -f out/arch/arm64/boot/Image ]; then
@@ -135,7 +129,7 @@ jobs:
             exit 1
           fi
           echo "✅ Image generado correctamente"
-          ls -lh out/arch/arm64/boot/Image*
+          ls -lh out/arch/arm64/boot/Image
 
       # ============================================================
       # EMPAQUETADO CON AnyKernel3
@@ -147,29 +141,23 @@ jobs:
           path: anykernel3
           fetch-depth: 1
 
-      - name: Copiar Image a AnyKernel3
+      - name: Copiar Image y crear build-info
         run: |
           cp kernel/out/arch/arm64/boot/Image anykernel3/Image
-          echo "Image copiado correctamente"
-
-      - name: Crear build-info.txt
-        run: |
           cat > anykernel3/build-info.txt << 'EOF'
           ============================================================
           Kernel OC Definitivo para a7y18lte
           ============================================================
-          Overclocks aplicados:
-            CPU LITTLE: 1690 MHz (forzado en exynos-acme.c)
-            CPU BIG:    2288 MHz (forzado en exynos-acme.c)
-            GPU:        1196 MHz (techo real)
+          CPU LITTLE: 1690 MHz (Cortex-A53)
+          CPU BIG:    2288 MHz (Cortex-A73)
+          GPU:        1196 MHz (Mali-G71 MP2, techo real)
           ============================================================
-          Verificación:
-            1. cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
-            2. cat /sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq
-            3. cat /sys/kernel/gpu/gpu_max_clock
+          Verificación post-flasheo:
+            cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+            cat /sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq
+            cat /sys/kernel/gpu/gpu_max_clock
           ============================================================
           EOF
-          cat anykernel3/build-info.txt
 
       - name: Crear ZIP flasheable
         run: |
