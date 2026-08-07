@@ -31,7 +31,7 @@ jobs:
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev \
             libncurses-dev git-core zip \
-            gcc-arm-linux-gnueabi python3
+            gcc-arm-linux-gnueabi
 
       # ============================================================
       # PARCHES DE COMPILACIÓN (OBLIGATORIOS)
@@ -52,48 +52,42 @@ jobs:
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # PARCHE EXYNOS-ACME.C CON PYTHON (robusto y fiable)
+      # ELIMINAR TODO EL CÓDIGO PROBLEMÁTICO DE exynos-acme.c
       # ============================================================
-      - name: Parchear exynos-acme.c con Python
+      - name: Limpiar y parchear exynos-acme.c completamente
         working-directory: kernel
         run: |
-          python3 - <<'EOF'
-          import re
+          ACME="drivers/cpufreq/exynos-acme.c"
 
-          file_path = "drivers/cpufreq/exynos-acme.c"
+          # 1. Eliminar completamente la función exynos_thermal_override_notifier
+          sed -i '/^static int exynos_thermal_override_notifier/,/^}/d' "$ACME"
 
-          with open(file_path, "r") as f:
-              content = f.read()
+          # 2. Eliminar cualquier referencia a exynos_thermal_override_notifier
+          sed -i '/exynos_thermal_override_notifier/d' "$ACME"
 
-          # 1. Eliminar la función exynos_thermal_override_notifier
-          # Buscar desde "static int exynos_thermal_override_notifier" hasta la llave de cierre
-          pattern = r'static int exynos_thermal_override_notifier\s*\([^)]*\)\s*\{[^{}]*(\{[^{}]*\}[^{}]*)*\}'
-          content = re.sub(pattern, '', content, flags=re.DOTALL)
+          # 3. Eliminar la llamada a exynos_cpufreq_set_freq (no existe en tu kernel)
+          sed -i '/exynos_cpufreq_set_freq/d' "$ACME"
 
-          # 2. Eliminar la referencia en el notifier_block
-          # Buscar la línea que contenga ".notifier_call = exynos_thermal_override_notifier" y eliminarla
-          pattern = r'\s*\.notifier_call\s*=\s*exynos_thermal_override_notifier,\s*'
-          content = re.sub(pattern, '', content)
+          # 4. Marcar funciones no usadas como __maybe_unused
+          sed -i 's/^static int scale(/static int __maybe_unused scale(/' "$ACME"
+          sed -i 's/^static int index_to_freq(/static int __maybe_unused index_to_freq(/' "$ACME"
 
-          # 3. Marcar funciones no usadas con __maybe_unused
-          content = re.sub(r'^static int scale\(', r'static int __maybe_unused scale(', content, flags=re.MULTILINE)
-          content = re.sub(r'^static int index_to_freq\(', r'static int __maybe_unused index_to_freq(', content, flags=re.MULTILINE)
+          # 5. Insertar override de overclock al final del archivo, en el lugar correcto
+          # Buscar la línea que contiene "pr_info("Complete to initialize cpufreq-domain""
+          # y añadir el override justo después
+          sed -i '/pr_info("Complete to initialize cpufreq-domain.*domain->id);/a \
+          \n\t/* Override CPU max frequencies */\
+          \tif (domain->id == 0) {\
+          \t\tdomain->max_freq = 1690000;\
+          \t\tdomain->min_freq = 208000;\
+          \t} else if (domain->id == 1) {\
+          \t\tdomain->max_freq = 2288000;\
+          \t\tdomain->min_freq = 728000;\
+          \t}' "$ACME"
 
-          # 4. Insertar override de frecuencias al final de init_domain (antes del return ret;)
-          # Buscar el último "return ret;" que esté en init_domain (asumimos que es el que está después de la línea de pr_info)
-          # Insertar el bloque justo antes
-          pattern = r'(\treturn ret;\s*\n\})'
-          replacement = r'''\t/* Override CPU max frequencies */\n\tif (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else if (domain->id == 1) {\n\t\tdomain->max_freq = 2288000;\n\t\tdomain->min_freq = 728000;\n\t}\n\n\t\1'''
-          content = re.sub(pattern, replacement, content, flags=re.DOTALL)
-
-          with open(file_path, "w") as f:
-              f.write(content)
-
-          print("✅ exynos-acme.c parcheado correctamente con Python")
-          EOF
-
-          # Mostrar el override insertado para verificación
-          grep -A20 "Override CPU max frequencies" drivers/cpufreq/exynos-acme.c || echo "No se encontró el override, pero puede que se haya insertado correctamente"
+          echo "✅ exynos-acme.c parcheado y limpiado"
+          # Verificar
+          tail -30 "$ACME"
 
       # ============================================================
       # GPU: tabla real de 5 niveles (máximo 1196 MHz)
@@ -120,31 +114,9 @@ jobs:
           echo "✅ GPU configurada con niveles reales"
 
       # ============================================================
-      # (OPCIONAL) Añadir parámetros de arranque al defconfig
+      # COMPILACIÓN
       # ============================================================
-      - name: Añadir cmdline al defconfig (respaldo)
-        working-directory: kernel
-        run: |
-          DEFCONFIG=$(find arch/arm64/configs -name "*a7y18lte*" | head -1)
-          if [ -z "$DEFCONFIG" ]; then
-            DEFCONFIG=$(find arch/arm64/configs -name "exynos7885*" | head -1)
-          fi
-          if [ -z "$DEFCONFIG" ]; then
-            echo "❌ ERROR: No se encontró defconfig"
-            exit 1
-          fi
-          echo "📝 Modificando $DEFCONFIG"
-          if ! grep -q "CONFIG_CMDLINE=" "$DEFCONFIG"; then
-            echo 'CONFIG_CMDLINE="cpu_max_c1=1690000 cpu_max_c2=2288000"' >> "$DEFCONFIG"
-          else
-            sed -i 's/^CONFIG_CMDLINE=.*/CONFIG_CMDLINE="cpu_max_c1=1690000 cpu_max_c2=2288000"/' "$DEFCONFIG"
-          fi
-          echo "✅ Parámetros de arranque añadidos"
-
-      # ============================================================
-      # COMPILACIÓN (ignorando errores de DTB si ocurren)
-      # ============================================================
-      - name: Compilar kernel (con -k para continuar aunque fallen DTBs)
+      - name: Compilar kernel
         working-directory: kernel
         run: |
           export ARCH=arm64
@@ -153,8 +125,7 @@ jobs:
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
           export KCFLAGS="-Wno-error=misleading-indentation"
           make O=out lineage_a7y18lte_defconfig
-          # Compilamos con -k para que si fallan los DTBs, igual se genere Image
-          make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS" || echo "⚠️ Algunos errores de DTB, pero el kernel Image puede estar generado"
+          make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS"
 
       - name: Verificar Image
         working-directory: kernel
@@ -193,10 +164,9 @@ jobs:
             GPU:        1196 MHz (techo real)
           ============================================================
           Verificación:
-            1. cat /proc/cmdline | grep cpu_max
-            2. cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
-            3. cat /sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq
-            4. cat /sys/kernel/gpu/gpu_max_clock
+            1. cat /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+            2. cat /sys/devices/system/cpu/cpufreq/policy6/scaling_max_freq
+            3. cat /sys/kernel/gpu/gpu_max_clock
           ============================================================
           EOF
           cat anykernel3/build-info.txt
