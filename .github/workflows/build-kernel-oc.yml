@@ -16,7 +16,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: sacksso/sack_kernel_samsung_exynos7885_testing
-          ref: lineage-18.1   # ← CAMBIADO: usa la rama correcta
+          ref: lineage-18.1
           path: kernel
           fetch-depth: 1
 
@@ -37,7 +37,7 @@ jobs:
           sudo apt-get install -y \
             build-essential bc bison flex libssl-dev \
             libncurses-dev git-core zip \
-            gcc-arm-linux-gnueabi perl
+            gcc-arm-linux-gnueabi perl python3
 
       # ============================================================
       # PARCHES DE COMPILACIÓN (OBLIGATORIOS)
@@ -58,16 +58,51 @@ jobs:
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # OVERCLOCK CPU: LITTLE 1690 + BIG 2288 (exynos-acme.c)
+      # OVERCLOCK CPU: LITTLE 1690 + BIG 2288 (método seguro)
       # ============================================================
       - name: Aplicar overclock CPU (LITTLE 1690, BIG 2288) en exynos-acme.c
         working-directory: kernel
         run: |
-          perl -0777 -pi -e '
-          s/domain->max_freq = cal_dfs_get_max_freq\(domain->cal_id\);\s*domain->min_freq = cal_dfs_get_min_freq\(domain->cal_id\);/if (domain->id == 0) {\n\t\tdomain->max_freq = 1690000;\n\t\tdomain->min_freq = 208000;\n\t} else if (domain->id == 1) {\n\t\tdomain->max_freq = 2288000;\n\t\tdomain->min_freq = 728000;\n\t} else {\n\t\tdomain->max_freq = cal_dfs_get_max_freq(domain->cal_id);\n\t\tdomain->min_freq = cal_dfs_get_min_freq(domain->cal_id);\n\t}/s
-          ' drivers/cpufreq/exynos-acme.c
-          echo "✅ Overclock CPU aplicado: LITTLE → 1690 MHz, BIG → 2288 MHz"
-          grep -A12 "domain->id" drivers/cpufreq/exynos-acme.c
+          python3 - <<'EOF'
+          import re
+          with open('drivers/cpufreq/exynos-acme.c', 'r') as f:
+              content = f.read()
+
+          # Buscar la función init_domain y añadir el override justo antes del return
+          pattern = r'(int\s+init_domain\s*\([^)]+\)\s*\{.*?)(return\s+ret;\s*\})'
+          replacement = r'''\1
+              /* Override CPU max frequencies: LITTLE (domain 0) to 1690 MHz, BIG (domain 1) to 2288 MHz */
+              if (domain->id == 0) {
+                  domain->max_freq = 1690000;
+                  domain->min_freq = 208000;
+              } else if (domain->id == 1) {
+                  domain->max_freq = 2288000;
+                  domain->min_freq = 728000;
+              }
+          \2'''
+          new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+
+          if new_content == content:
+              print("⚠️  No se encontró el patrón, buscando alternativa...")
+              # Fallback: buscar al final de la función init_domain
+              pattern = r'(domain->old\s*=\s*get_freq\(domain\);\s*)(.*?)(\s*return ret;)'
+              replacement = r'''\1\2
+              /* Override CPU max frequencies */
+              if (domain->id == 0) {
+                  domain->max_freq = 1690000;
+                  domain->min_freq = 208000;
+              } else if (domain->id == 1) {
+                  domain->max_freq = 2288000;
+                  domain->min_freq = 728000;
+              }
+          \3'''
+              new_content = re.sub(pattern, replacement, content, flags=re.DOTALL)
+
+          with open('drivers/cpufreq/exynos-acme.c', 'w') as f:
+              f.write(new_content)
+          print("✅ Overclock CPU aplicado: LITTLE → 1690 MHz, BIG → 2288 MHz")
+          EOF
+          grep -A5 "Override CPU" drivers/cpufreq/exynos-acme.c || echo "⚠️  No se encontró el override en el archivo"
 
       # ============================================================
       # MODIFICAR DEVICE TREE (eliminar max-freq para priorizar código)
