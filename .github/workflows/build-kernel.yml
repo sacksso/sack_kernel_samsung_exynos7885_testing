@@ -113,12 +113,32 @@ jobs:
           printf '\n# KernelSU\nCONFIG_KSU=y\n' >> arch/arm64/configs/lineage_a7y18lte_defconfig
           grep -n "CONFIG_OVERLAY_FS\|CONFIG_KSU" arch/arm64/configs/lineage_a7y18lte_defconfig
 
-      - name: Patch fs/exec.c (do_execveat_common)
+      # FIX (2026-09-07): la rama "if (unlikely(ksu_execveat_hook))" de la guía
+      # oficial NUNCA es true en integración manual - esa bandera solo la pone
+      # en true el kprobe, que aquí está desactivado a propósito (SafeMode).
+      # Resultado: do_execveat_common solo llamaba a ksu_handle_execveat_sucompat
+      # (resuelve permisos de su) y JAMÁS a ksu_handle_execveat_ksud, que es la
+      # única función que detecta el exec de init/zygote y lanza el daemon ksud
+      # en background. Por eso su funcionaba pero el daemon nunca arrancaba solo
+      # (síntoma: `ps -A | grep ksud` vacío tras boot, hasta abrir el Manager).
+      # Fix: llamar a ambas funciones directamente, sin la rama condicional.
+      - name: Patch fs/exec.c (do_execveat_common) - hook completo con arranque de ksud
         working-directory: kernel
         run: |
-          perl -0777 -pi -e 's/static int do_execveat_common\(int fd, struct filename \*filename,/#ifdef CONFIG_KSU\nextern bool ksu_execveat_hook __read_mostly;\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,\n\t\t\tvoid *envp, int *flags);\nextern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,\n\t\t\t\t void *argv, void *envp, int *flags);\n#endif\nstatic int do_execveat_common(int fd, struct filename *filename,/' fs/exec.c
-          perl -0777 -pi -e 's/\tint retval;\n\n\tif \(IS_ERR\(filename\)\)\n\t\treturn PTR_ERR\(filename\);/\tint retval;\n\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_execveat_hook))\n\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n\telse\n\t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n#endif\n\n\tif (IS_ERR(filename))\n\t\treturn PTR_ERR(filename);/' fs/exec.c
-          grep -c "ksu_handle_execveat" fs/exec.c
+          perl -0777 -pi -e 's/static int do_execveat_common\(int fd, struct filename \*filename,/#ifdef CONFIG_KSU\nextern int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,\n\t\t\tvoid *argv, void *envp, int *flags);\nextern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,\n\t\t\t\t void *argv, void *envp, int *flags);\n#endif\nstatic int do_execveat_common(int fd, struct filename *filename,/' fs/exec.c
+          perl -0777 -pi -e 's/\tint retval;\n\n\tif \(IS_ERR\(filename\)\)\n\t\treturn PTR_ERR\(filename\);/\tint retval;\n\n#ifdef CONFIG_KSU\n\tksu_handle_execveat_ksud(&fd, &filename, &argv, &envp, &flags);\n\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n#endif\n\n\tif (IS_ERR(filename))\n\t\treturn PTR_ERR(filename);/' fs/exec.c
+          echo "--- Verificacion (Regla 8): cada simbolo debe aparecer 2 veces (extern + llamada) ---"
+          KSUD_COUNT=$(grep -c "ksu_handle_execveat_ksud" fs/exec.c)
+          SUCOMPAT_COUNT=$(grep -c "ksu_handle_execveat_sucompat" fs/exec.c)
+          echo "ksu_handle_execveat_ksud: $KSUD_COUNT | ksu_handle_execveat_sucompat: $SUCOMPAT_COUNT"
+          if [ "$KSUD_COUNT" -ne 2 ] || [ "$SUCOMPAT_COUNT" -ne 2 ]; then
+            echo "ERROR: el patron de fs/exec.c no matcheo como se esperaba (fallo silencioso, Regla 8)"
+            exit 1
+          fi
+          if grep -q "ksu_execveat_hook" fs/exec.c; then
+            echo "ERROR: quedo codigo viejo de ksu_execveat_hook (rama que nunca corre sin kprobe)"
+            exit 1
+          fi
 
       - name: Patch fs/open.c (faccessat, variante pre-4.17)
         working-directory: kernel
@@ -240,6 +260,8 @@ jobs:
             - Hooks en exec.c, open.c, read_write.c, stat.c
             - SafeMode habilitado (input.c) - CONFIG_KPROBES desactivado
             - path_umount backporteado (fs/namespace.c) - arregla "Umount module"
+            - FIX: exec.c ahora llama a ksu_handle_execveat_ksud directamente
+              (antes solo corria sucompat -> el daemon ksud nunca arrancaba solo)
           Sin overclock de CPU/GPU. Sin KCFLAGS de supresión de errores.
           ========================================
           EOF
