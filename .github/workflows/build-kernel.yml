@@ -147,12 +147,33 @@ jobs:
           perl -0777 -pi -e 's/(unsigned int lookup_flags = LOOKUP_FOLLOW;\n)(\n\tif \(mode & ~S_IRWXO\))/$1\n#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n$2/' fs/open.c
           grep -c "ksu_handle_faccessat" fs/open.c
 
-      - name: Patch fs/read_write.c (vfs_read)
+      # FIX (2026-09-07, ronda 2): mismo patron de bug que exec.c, pero este es
+      # el hook que de verdad importa para el arranque automatico. Segun la
+      # arquitectura real de KernelSU, ksud NO arranca via un usermode helper
+      # disparado desde execveat - arranca porque este hook intercepta la
+      # LECTURA de /system/etc/init/hw/init.rc e inyecta ahi las lineas de
+      # servicio, para que init arranque ksud como un servicio Android normal.
+      # "ksu_vfs_read_hook" es una bandera que SOLO pone en true el kprobe;
+      # en integracion manual queda en false para siempre y ksu_handle_vfs_read
+      # nunca se llama -> init.rc nunca se modifica -> ksud nunca arranca solo.
+      # Confirmado con dmesg: solo aparecian logs de faccessat/execveat
+      # (llamadas sin condicion), nunca nada del lado de vfs_read.
+      - name: Patch fs/read_write.c (vfs_read) - hook real de arranque via init.rc
         working-directory: kernel
         run: |
-          perl -0777 -pi -e 's/(ssize_t vfs_read\(struct file \*file, char __user \*buf, size_t count, loff_t \*pos\))/#ifdef CONFIG_KSU\nextern bool ksu_vfs_read_hook __read_mostly;\nextern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n\t\t\tsize_t *count_ptr, loff_t **pos);\n#endif\n$1/' fs/read_write.c
-          perl -0777 -pi -e 's/(ssize_t ret;\n)(\n\tif \(!\(file->f_mode & FMODE_READ\)\))/$1\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_vfs_read_hook))\n\t\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif\n$2/' fs/read_write.c
-          grep -c "ksu_handle_vfs_read" fs/read_write.c
+          perl -0777 -pi -e 's/(ssize_t vfs_read\(struct file \*file, char __user \*buf, size_t count, loff_t \*pos\))/#ifdef CONFIG_KSU\nextern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n\t\t\tsize_t *count_ptr, loff_t **pos);\n#endif\n$1/' fs/read_write.c
+          perl -0777 -pi -e 's/(ssize_t ret;\n)(\n\tif \(!\(file->f_mode & FMODE_READ\)\))/$1\n#ifdef CONFIG_KSU\n\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif\n$2/' fs/read_write.c
+          echo "--- Verificacion (Regla 8): el simbolo debe aparecer 2 veces (extern + llamada), sin bandera vieja ---"
+          VFS_READ_COUNT=$(grep -c "ksu_handle_vfs_read" fs/read_write.c)
+          echo "ksu_handle_vfs_read: $VFS_READ_COUNT"
+          if [ "$VFS_READ_COUNT" -ne 2 ]; then
+            echo "ERROR: el patron de fs/read_write.c no matcheo como se esperaba (fallo silencioso, Regla 8)"
+            exit 1
+          fi
+          if grep -q "ksu_vfs_read_hook" fs/read_write.c; then
+            echo "ERROR: quedo codigo viejo de ksu_vfs_read_hook (bandera que nunca se activa sin kprobe)"
+            exit 1
+          fi
 
       - name: Patch fs/stat.c (vfs_fstatat - no existe vfs_statx en este kernel)
         working-directory: kernel
@@ -161,12 +182,26 @@ jobs:
           perl -0777 -pi -e 's/(unsigned int lookup_flags = 0;\n)(\n\tif \(\(flag & ~\(AT_SYMLINK_NOFOLLOW)/$1\n#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n$2/' fs/stat.c
           grep -c "ksu_handle_stat" fs/stat.c
 
+      # FIX (2026-09-07, ronda 2): mismo bug de bandera-nunca-activada que
+      # vfs_read. Sin esto, Safe Mode (volumen abajo en boot para desactivar
+      # modulos) esta silenciosamente inactivo en este build, aunque
+      # CONFIG_KPROBES este bien desactivado.
       - name: Patch drivers/input/input.c (SafeMode)
         working-directory: kernel
         run: |
-          perl -0777 -pi -e 's/(static void input_handle_event\(struct input_dev \*dev,\n\t\t\t       unsigned int type, unsigned int code, int value\))/#ifdef CONFIG_KSU\nextern bool ksu_input_hook __read_mostly;\nextern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);\n#endif\n\n$1/' drivers/input/input.c
-          perl -0777 -pi -e 's/(disposition = input_get_disposition\(dev, type, code, &value\);\n)(\n\tif \(\(disposition & INPUT_PASS_TO_DEVICE\))/$1\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_input_hook))\n\t\tksu_handle_input_handle_event(&type, &code, &value);\n#endif\n$2/' drivers/input/input.c
-          grep -c "ksu_handle_input_handle_event" drivers/input/input.c
+          perl -0777 -pi -e 's/(static void input_handle_event\(struct input_dev \*dev,\n\t\t\t       unsigned int type, unsigned int code, int value\))/#ifdef CONFIG_KSU\nextern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);\n#endif\n\n$1/' drivers/input/input.c
+          perl -0777 -pi -e 's/(disposition = input_get_disposition\(dev, type, code, &value\);\n)(\n\tif \(\(disposition & INPUT_PASS_TO_DEVICE\))/$1\n#ifdef CONFIG_KSU\n\tksu_handle_input_handle_event(&type, &code, &value);\n#endif\n$2/' drivers/input/input.c
+          echo "--- Verificacion (Regla 8) ---"
+          INPUT_COUNT=$(grep -c "ksu_handle_input_handle_event" drivers/input/input.c)
+          echo "ksu_handle_input_handle_event: $INPUT_COUNT"
+          if [ "$INPUT_COUNT" -ne 2 ]; then
+            echo "ERROR: el patron de input.c no matcheo como se esperaba (fallo silencioso, Regla 8)"
+            exit 1
+          fi
+          if grep -q "ksu_input_hook" drivers/input/input.c; then
+            echo "ERROR: quedo codigo viejo de ksu_input_hook (bandera que nunca se activa sin kprobe)"
+            exit 1
+          fi
 
       # Backport de path_umount (de Linux 5.9 a este kernel 4.4). Sin esto,
       # la función "Umount module" / limpieza al borrar un módulo queda
@@ -262,6 +297,12 @@ jobs:
             - path_umount backporteado (fs/namespace.c) - arregla "Umount module"
             - FIX: exec.c ahora llama a ksu_handle_execveat_ksud directamente
               (antes solo corria sucompat -> el daemon ksud nunca arrancaba solo)
+            - FIX (ronda 2, el que de verdad importa): read_write.c ya no
+              gatea ksu_handle_vfs_read detras de ksu_vfs_read_hook (bandera
+              que solo activa el kprobe). Este es el hook que inyecta el
+              servicio ksud en init.rc - sin el, el daemon jamas arranca solo.
+            - FIX (ronda 2): mismo arreglo en input.c - Safe Mode (volumen
+              abajo en boot) ahora si funciona, antes estaba inactivo.
           Sin overclock de CPU/GPU. Sin KCFLAGS de supresión de errores.
           ========================================
           EOF
