@@ -1,4 +1,4 @@
-name: Build Kernel for a7y18lte (LineageOS 18.1) - Stable + AnyKernel3
+name: Build Kernel for a7y18lte (LineageOS 18.1) - Stable + KernelSU + AnyKernel3
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
 
@@ -70,12 +70,7 @@ jobs:
           grep -n "char country_code\[SLSI_COUNTRY_CODE_LEN\]" drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # ÚNICO AJUSTE NUEVO: TCP congestion control bic -> cubic.
-      # Verificado contra el defconfig real: CUBIC ya está compilado
-      # (CONFIG_TCP_CONG_CUBIC=y), solo bic era el default. Cambio de
-      # software puro, sin relación con voltaje/frecuencia - CUBIC es
-      # el estándar en casi todo Linux moderno desde hace años.
-      # Si preferís no incluirlo, basta con borrar este step.
+      # AJUSTE: TCP congestion control bic -> cubic (software puro)
       # ============================================================
 
       - name: Set default TCP congestion control to cubic
@@ -85,6 +80,86 @@ jobs:
           's/^CONFIG_DEFAULT_TCP_CONG="bic"/CONFIG_DEFAULT_TCP_CONG="cubic"/' \
           arch/arm64/configs/lineage_a7y18lte_defconfig
           grep -n "^CONFIG_DEFAULT_TCP_CONG" arch/arm64/configs/lineage_a7y18lte_defconfig
+
+      # ============================================================
+      # KERNELSU v0.9.5 - integración manual (sin kprobe, este kernel
+      # es 4.4 y kprobe no es confiable en kernels tan viejos)
+      #
+      # Las 5 inserciones de abajo NO usan patrones ancla al inicio de
+      # línea (^) porque do_execveat_common en ESTE kernel arranca con
+      # "static", no con "int" - un patrón genérico ahí falla en
+      # silencio (exit 0, sin insertar nada). En cambio, cada perl
+      # usa contexto de varias líneas real, verificado contra el
+      # árbol de exynos7885-dev antes de escribir esto, y cada uno
+      # confirmado con un solo match (no ambiguo).
+      # ============================================================
+
+      - name: Add KernelSU v0.9.5 source tree
+        working-directory: kernel
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s v0.9.5
+          ls drivers/kernelsu
+          grep -n "kernelsu" drivers/Makefile drivers/Kconfig
+
+      # CONFIG_KSU depende de CONFIG_OVERLAY_FS, que está desactivado
+      # en este defconfig. Agregar solo "CONFIG_KSU=y" sin esto hace
+      # que Kconfig lo descarte en silencio (mismo tipo de fallo
+      # silencioso que el bug del regex, pero en otro punto - no
+      # aparece ni un error, el .config simplemente no trae KSU).
+      - name: Enable CONFIG_OVERLAY_FS and CONFIG_KSU in defconfig
+        working-directory: kernel
+        run: |
+          sed -i 's/# CONFIG_OVERLAY_FS is not set/CONFIG_OVERLAY_FS=y/' arch/arm64/configs/lineage_a7y18lte_defconfig
+          printf '\n# KernelSU\nCONFIG_KSU=y\n' >> arch/arm64/configs/lineage_a7y18lte_defconfig
+          grep -n "CONFIG_OVERLAY_FS\|CONFIG_KSU" arch/arm64/configs/lineage_a7y18lte_defconfig
+
+      - name: Patch fs/exec.c (do_execveat_common)
+        working-directory: kernel
+        run: |
+          perl -0777 -pi -e 's/static int do_execveat_common\(int fd, struct filename \*filename,/#ifdef CONFIG_KSU\nextern bool ksu_execveat_hook __read_mostly;\nextern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv,\n\t\t\tvoid *envp, int *flags);\nextern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,\n\t\t\t\t void *argv, void *envp, int *flags);\n#endif\nstatic int do_execveat_common(int fd, struct filename *filename,/' fs/exec.c
+          perl -0777 -pi -e 's/\tint retval;\n\n\tif \(IS_ERR\(filename\)\)\n\t\treturn PTR_ERR\(filename\);/\tint retval;\n\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_execveat_hook))\n\t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);\n\telse\n\t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n#endif\n\n\tif (IS_ERR(filename))\n\t\treturn PTR_ERR(filename);/' fs/exec.c
+          grep -c "ksu_handle_execveat" fs/exec.c
+
+      - name: Patch fs/open.c (faccessat, variante pre-4.17)
+        working-directory: kernel
+        run: |
+          perl -0777 -pi -e 's{(/\*\n \* access\(\) needs to use the real uid/gid)}{#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,\n\t\t\t        int *flags);\n#endif\n\n$1}' fs/open.c
+          perl -0777 -pi -e 's/(unsigned int lookup_flags = LOOKUP_FOLLOW;\n)(\n\tif \(mode & ~S_IRWXO\))/$1\n#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n$2/' fs/open.c
+          grep -c "ksu_handle_faccessat" fs/open.c
+
+      - name: Patch fs/read_write.c (vfs_read)
+        working-directory: kernel
+        run: |
+          perl -0777 -pi -e 's/(ssize_t vfs_read\(struct file \*file, char __user \*buf, size_t count, loff_t \*pos\))/#ifdef CONFIG_KSU\nextern bool ksu_vfs_read_hook __read_mostly;\nextern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n\t\t\tsize_t *count_ptr, loff_t **pos);\n#endif\n$1/' fs/read_write.c
+          perl -0777 -pi -e 's/(ssize_t ret;\n)(\n\tif \(!\(file->f_mode & FMODE_READ\)\))/$1\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_vfs_read_hook))\n\t\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif\n$2/' fs/read_write.c
+          grep -c "ksu_handle_vfs_read" fs/read_write.c
+
+      - name: Patch fs/stat.c (vfs_fstatat - no existe vfs_statx en este kernel)
+        working-directory: kernel
+        run: |
+          perl -0777 -pi -e 's/(int vfs_fstatat\(int dfd, const char __user \*filename, struct kstat \*stat,)/#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n$1/' fs/stat.c
+          perl -0777 -pi -e 's/(unsigned int lookup_flags = 0;\n)(\n\tif \(\(flag & ~\(AT_SYMLINK_NOFOLLOW)/$1\n#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n$2/' fs/stat.c
+          grep -c "ksu_handle_stat" fs/stat.c
+
+      - name: Patch drivers/input/input.c (SafeMode)
+        working-directory: kernel
+        run: |
+          perl -0777 -pi -e 's/(static void input_handle_event\(struct input_dev \*dev,\n\t\t\t       unsigned int type, unsigned int code, int value\))/#ifdef CONFIG_KSU\nextern bool ksu_input_hook __read_mostly;\nextern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);\n#endif\n\n$1/' drivers/input/input.c
+          perl -0777 -pi -e 's/(disposition = input_get_disposition\(dev, type, code, &value\);\n)(\n\tif \(\(disposition & INPUT_PASS_TO_DEVICE\))/$1\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_input_hook))\n\t\tksu_handle_input_handle_event(&type, &code, &value);\n#endif\n$2/' drivers/input/input.c
+          grep -c "ksu_handle_input_handle_event" drivers/input/input.c
+
+      # CONFIG_KPROBES ya está ausente por defecto en este defconfig
+      # (confirmado: 0 apariciones) - es justo lo que pide la guía de
+      # integración manual. Si estuviera activo, cualquiera podría
+      # entrar a SafeMode apretando volumen abajo sin querer.
+      - name: Verify CONFIG_KPROBES stays disabled (required for manual SafeMode)
+        working-directory: kernel
+        run: |
+          if grep -q "^CONFIG_KPROBES=y" arch/arm64/configs/lineage_a7y18lte_defconfig; then
+            echo "ERROR: CONFIG_KPROBES está activo - esto permite entrar a SafeMode sin querer"
+            exit 1
+          fi
+          echo "OK: CONFIG_KPROBES ausente, como debe ser"
 
       # ============================================================
       # COMPILACIÓN - sin KCFLAGS de supresión
@@ -98,6 +173,7 @@ jobs:
           export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
           make O=out lineage_a7y18lte_defconfig
+          grep -q "^CONFIG_KSU=y" out/.config || { echo "ERROR: CONFIG_KSU no quedó activo en .config"; exit 1; }
           make O=out -j"$(nproc)"
 
       - name: Verify kernel output
@@ -112,9 +188,6 @@ jobs:
 
       # ============================================================
       # EMPAQUETADO AUTOMÁTICO CON ANYKERNEL3
-      # (usa tu propio fork ya configurado con BLOCK=/dev/block/by-name/BOOT,
-      # IS_SLOT_DEVICE=0, device.name1=a7y18lte - los datos reales
-      # confirmados en tu equipo)
       # ============================================================
 
       - name: Checkout AnyKernel3
@@ -148,6 +221,10 @@ jobs:
             - nl80211_vendor.c: country_code sin inicializar
           Ajustes:
             - TCP congestion control: cubic (antes bic)
+          KernelSU v0.9.5 (integración manual, sin kprobe):
+            - CONFIG_OVERLAY_FS=y + CONFIG_KSU=y
+            - Hooks en exec.c, open.c, read_write.c, stat.c
+            - SafeMode habilitado (input.c) - CONFIG_KPROBES desactivado
           Sin overclock de CPU/GPU. Sin KCFLAGS de supresión de errores.
           ========================================
           EOF
@@ -163,6 +240,6 @@ jobs:
       - name: Upload final ZIP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a7y18lte-Stable-Kernel
+          name: a7y18lte-Stable-Kernel-KernelSU
           path: a7y18lte-Stable-Kernel.zip
           if-no-files-found: error
