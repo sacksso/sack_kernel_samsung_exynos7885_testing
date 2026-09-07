@@ -1,4 +1,4 @@
-name: Build Kernel for a7y18lte (LineageOS 18.1)
+name: Build Kernel for a7y18lte (LineageOS 18.1) - Stable + AnyKernel3
 
 on:
   workflow_dispatch:
@@ -9,7 +9,8 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Checkout del kernel
+
+      - name: Checkout kernel
         uses: actions/checkout@v4
         with:
           repository: exynos7885-dev/kernel_samsung_exynos7885
@@ -17,7 +18,7 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Checkout toolchain GCC 6.4.1
+      - name: Checkout GCC 6.4.1 toolchain
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1
@@ -25,70 +26,143 @@ jobs:
           path: toolchain/aarch64
           fetch-depth: 1
 
-      - name: Instalar dependencias
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential bc bison flex libssl-dev \
-            libncurses-dev git-core zip \
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libncurses-dev \
+            git-core \
+            zip \
             gcc-arm-linux-gnueabi
 
       # ============================================================
-      # PARCHES REALES (arreglan la causa, no solo el warning del
-      # compilador) - los tres confirmados contra el código fuente:
+      # LOS 3 FIXES REALES (arreglan la causa, no el síntoma - sin
+      # ningún KCFLAGS de supresión)
       # ============================================================
 
-      - name: Corregir decon_clocks_table (double -> unsigned long)
+      - name: Fix decon_clocks_table
         working-directory: kernel
         run: |
-          sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
+          sed -i \
+          's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' \
+          drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
           grep -n "^const unsigned long decon_clocks_table" drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
 
-      - name: Corregir topology.c (el 'if' roto de HMP fast/slow cpu mask)
+      - name: Fix topology.c warning
         working-directory: kernel
         run: |
-          sed -i 's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' arch/arm64/kernel/topology.c
+          sed -i \
+          's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' \
+          arch/arm64/kernel/topology.c
           grep -n "strlen(CONFIG_HMP_FAST_CPU_MASK)" arch/arm64/kernel/topology.c
 
-      - name: Corregir nl80211_vendor.c (country_code sin inicializar)
+      - name: Fix nl80211 country_code
         working-directory: kernel
         run: |
-          sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
+          sed -i \
+          's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' \
+          drivers/net/wireless/scsc/nl80211_vendor.c
           grep -n "char country_code\[SLSI_COUNTRY_CODE_LEN\]" drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # COMPILACIÓN - sin KCFLAGS de supresión. Si algo más rompe acá,
-      # es una señal real que hay que revisar, no tapar.
+      # ÚNICO AJUSTE NUEVO: TCP congestion control bic -> cubic.
+      # Verificado contra el defconfig real: CUBIC ya está compilado
+      # (CONFIG_TCP_CONG_CUBIC=y), solo bic era el default. Cambio de
+      # software puro, sin relación con voltaje/frecuencia - CUBIC es
+      # el estándar en casi todo Linux moderno desde hace años.
+      # Si preferís no incluirlo, basta con borrar este step.
       # ============================================================
-      - name: Compilar kernel
+
+      - name: Set default TCP congestion control to cubic
+        working-directory: kernel
+        run: |
+          sed -i \
+          's/^CONFIG_DEFAULT_TCP_CONG="bic"/CONFIG_DEFAULT_TCP_CONG="cubic"/' \
+          arch/arm64/configs/lineage_a7y18lte_defconfig
+          grep -n "^CONFIG_DEFAULT_TCP_CONG" arch/arm64/configs/lineage_a7y18lte_defconfig
+
+      # ============================================================
+      # COMPILACIÓN - sin KCFLAGS de supresión
+      # ============================================================
+
+      - name: Compile kernel
         working-directory: kernel
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
-
           make O=out lineage_a7y18lte_defconfig
           make O=out -j"$(nproc)"
 
-      # ============================================================
-      # VERIFICAR SALIDA
-      # ============================================================
-      - name: Verificar salida
+      - name: Verify kernel output
         working-directory: kernel
         run: |
-          ls -la out/arch/arm64/boot/Image*
+          ls -lh out/arch/arm64/boot/Image*
           if [ ! -f out/arch/arm64/boot/Image ]; then
-            echo "❌ ERROR: No se generó Image"
+            echo "ERROR: Image not generated"
             exit 1
           fi
-          echo "✅ Image generado correctamente"
+          echo "Kernel compiled successfully"
 
-      - name: Subir artifact
+      # ============================================================
+      # EMPAQUETADO AUTOMÁTICO CON ANYKERNEL3
+      # (usa tu propio fork ya configurado con BLOCK=/dev/block/by-name/BOOT,
+      # IS_SLOT_DEVICE=0, device.name1=a7y18lte - los datos reales
+      # confirmados en tu equipo)
+      # ============================================================
+
+      - name: Checkout AnyKernel3
+        uses: actions/checkout@v4
+        with:
+          repository: sacksso/AnyKernel3-a7y18lte
+          path: anykernel3
+          fetch-depth: 1
+
+      - name: Copy Image to AnyKernel3
+        run: |
+          cp kernel/out/arch/arm64/boot/Image anykernel3/Image
+          ls -lh anykernel3/Image
+
+      - name: Create build-info.txt
+        run: |
+          cat > anykernel3/build-info.txt <<EOF
+          ========================================
+          a7y18lte Stable Kernel Build Information
+          ========================================
+          Device: Samsung Galaxy A7 2018 (a7y18lte)
+          Model: SM-A750F/FN/G
+          Kernel: Linux 4.4.302
+          Compiler: GCC 6.4.1 (aarch64-linux-gnu) + gcc-arm-linux-gnueabi (32-bit)
+          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Commit: $(git --git-dir=kernel/.git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+          ========================================
+          Fixes aplicados (reales, no supresión de warnings):
+            - decon_clocks_table: double -> unsigned long
+            - topology.c: if roto de HMP fast/slow cpu mask
+            - nl80211_vendor.c: country_code sin inicializar
+          Ajustes:
+            - TCP congestion control: cubic (antes bic)
+          Sin overclock de CPU/GPU. Sin KCFLAGS de supresión de errores.
+          ========================================
+          EOF
+          cat anykernel3/build-info.txt
+
+      - name: Create flashable ZIP
+        run: |
+          cd anykernel3
+          zip -r9 ../a7y18lte-Stable-Kernel.zip . -x "*.git*"
+          cd ..
+          ls -lh a7y18lte-Stable-Kernel.zip
+
+      - name: Upload final ZIP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a7y18lte-kernel-bundle
-          path: |
-            kernel/out/arch/arm64/boot/Image
-            kernel/out/arch/arm64/boot/Image.gz
+          name: a7y18lte-Stable-Kernel
+          path: a7y18lte-Stable-Kernel.zip
           if-no-files-found: error
