@@ -1,4 +1,4 @@
-name: Build Kernel for a7y18lte (LineageOS 18.1) - ESTABLE con AnyKernel3
+name: Build Kernel for a7y18lte (LineageOS 18.1)
 
 on:
   workflow_dispatch:
@@ -9,7 +9,7 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Checkout kernel
+      - name: Checkout del kernel
         uses: actions/checkout@v4
         with:
           repository: exynos7885-dev/kernel_samsung_exynos7885
@@ -17,7 +17,7 @@ jobs:
           path: kernel
           fetch-depth: 1
 
-      - name: Checkout GCC 6.4.1 toolchain
+      - name: Checkout toolchain GCC 6.4.1
         uses: actions/checkout@v4
         with:
           repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1
@@ -25,119 +25,70 @@ jobs:
           path: toolchain/aarch64
           fetch-depth: 1
 
-      - name: Install dependencies
+      - name: Instalar dependencias
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
-            bc \
-            bison \
-            flex \
-            libssl-dev \
-            libncurses-dev \
-            git-core \
-            zip \
+            build-essential bc bison flex libssl-dev \
+            libncurses-dev git-core zip \
             gcc-arm-linux-gnueabi
 
       # ============================================================
-      # FIXES DE COMPILACIÓN (obligatorios)
+      # PARCHES REALES (arreglan la causa, no solo el warning del
+      # compilador) - los tres confirmados contra el código fuente:
       # ============================================================
-      - name: Fix decon_clocks_table
+
+      - name: Corregir decon_clocks_table (double -> unsigned long)
         working-directory: kernel
         run: |
-          sed -i \
-          's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' \
-          drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
+          sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
+          grep -n "^const unsigned long decon_clocks_table" drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
 
-      - name: Fix topology.c warning
+      - name: Corregir topology.c (el 'if' roto de HMP fast/slow cpu mask)
         working-directory: kernel
         run: |
-          sed -i \
-          's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' \
-          arch/arm64/kernel/topology.c
+          sed -i 's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' arch/arm64/kernel/topology.c
+          grep -n "strlen(CONFIG_HMP_FAST_CPU_MASK)" arch/arm64/kernel/topology.c
 
-      - name: Fix nl80211 country_code
+      - name: Corregir nl80211_vendor.c (country_code sin inicializar)
         working-directory: kernel
         run: |
-          sed -i \
-          's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' \
-          drivers/net/wireless/scsc/nl80211_vendor.c
+          sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' drivers/net/wireless/scsc/nl80211_vendor.c
+          grep -n "char country_code\[SLSI_COUNTRY_CODE_LEN\]" drivers/net/wireless/scsc/nl80211_vendor.c
 
       # ============================================================
-      # COMPILACIÓN
+      # COMPILACIÓN - sin KCFLAGS de supresión. Si algo más rompe acá,
+      # es una señal real que hay que revisar, no tapar.
       # ============================================================
-      - name: Compile kernel
+      - name: Compilar kernel
         working-directory: kernel
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
-          export KCFLAGS="-Wno-error=misleading-indentation"
+
           make O=out lineage_a7y18lte_defconfig
-          make O=out -j"$(nproc)" KCFLAGS="$KCFLAGS"
+          make O=out -j"$(nproc)"
 
       # ============================================================
-      # VERIFICACIÓN DE SALIDA
+      # VERIFICAR SALIDA
       # ============================================================
-      - name: Verify kernel output
+      - name: Verificar salida
         working-directory: kernel
         run: |
-          ls -lh out/arch/arm64/boot/Image*
+          ls -la out/arch/arm64/boot/Image*
           if [ ! -f out/arch/arm64/boot/Image ]; then
-            echo "ERROR: Image not generated"
+            echo "❌ ERROR: No se generó Image"
             exit 1
           fi
-          echo "Kernel compiled successfully"
+          echo "✅ Image generado correctamente"
 
-      # ============================================================
-      # CLONAR ANYKERNEL3 Y EMPAQUETAR
-      # ============================================================
-      - name: Checkout AnyKernel3
-        uses: actions/checkout@v4
-        with:
-          repository: sacksso/AnyKernel3-a7y18lte
-          path: anykernel3
-          fetch-depth: 1
-
-      - name: Copy Image to AnyKernel3
-        run: |
-          cp kernel/out/arch/arm64/boot/Image anykernel3/Image
-          echo "Image copiado correctamente a AnyKernel3"
-          ls -lh anykernel3/Image
-
-      - name: Create build-info.txt
-        run: |
-          cat > anykernel3/build-info.txt <<EOF
-          ========================================
-          a7y18lte Kernel Build Information (ESTABLE)
-          ========================================
-          Device: Samsung Galaxy A7 2018 (a7y18lte)
-          Model: SM-A750F/FN/G
-          Kernel: Linux 4.4.302
-          Compiler: GCC 6.4.1
-          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          Commit: $(git --git-dir=kernel/.git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-          ========================================
-          This ZIP contains:
-            - Patched kernel Image (no overclock)
-            - AnyKernel3 installer
-            - Suitable for TWRP installation
-          ========================================
-          EOF
-          cat anykernel3/build-info.txt
-
-      - name: Create flashable ZIP
-        run: |
-          cd anykernel3
-          zip -r9 ../a7y18lte-Kernel-Stable.zip . -x "*.git*"
-          cd ..
-          echo "ZIP creado correctamente"
-          ls -lh a7y18lte-Kernel-Stable.zip
-
-      - name: Upload final ZIP artifact
+      - name: Subir artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a7y18lte-Kernel-Stable
-          path: a7y18lte-Kernel-Stable.zip
+          name: a7y18lte-kernel-bundle
+          path: |
+            kernel/out/arch/arm64/boot/Image
+            kernel/out/arch/arm64/boot/Image.gz
           if-no-files-found: error
