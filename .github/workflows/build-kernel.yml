@@ -148,6 +148,20 @@ jobs:
           perl -0777 -pi -e 's/(disposition = input_get_disposition\(dev, type, code, &value\);\n)(\n\tif \(\(disposition & INPUT_PASS_TO_DEVICE\))/$1\n#ifdef CONFIG_KSU\n\tif (unlikely(ksu_input_hook))\n\t\tksu_handle_input_handle_event(&type, &code, &value);\n#endif\n$2/' drivers/input/input.c
           grep -c "ksu_handle_input_handle_event" drivers/input/input.c
 
+      # Backport de path_umount (de Linux 5.9 a este kernel 4.4). Sin esto,
+      # la función "Umount module" / limpieza al borrar un módulo queda
+      # incompleta - el archivo "remove" marcador se crea pero nunca se
+      # termina de procesar, y el módulo sigue apareciendo después de
+      # reiniciar. Documentado explícitamente por la guía oficial de
+      # KernelSU para kernels pre-5.9. Adaptado al layout real de este
+      # árbol (incluye la variante CONFIG_RKP_NS_PROT de Samsung, que
+      # cambia cómo se accede a mnt_flags).
+      - name: Backport path_umount to fs/namespace.c
+        working-directory: kernel
+        run: |
+          perl -0777 -pi -e 's/(static inline bool may_mount\(void\)\n\{\n\treturn ns_capable\(current->nsproxy->mnt_ns->user_ns, CAP_SYS_ADMIN\);\n\}\n)/$1\n#ifdef CONFIG_KSU\n#ifdef CONFIG_RKP_NS_PROT\nstatic int can_umount(const struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\n\tif (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))\n\t\treturn -EINVAL;\n\tif (!may_mount())\n\t\treturn -EPERM;\n\tif (path->dentry != path->mnt->mnt_root)\n\t\treturn -EINVAL;\n\tif (!check_mnt(mnt))\n\t\treturn -EINVAL;\n\tif (mnt->mnt->mnt_flags & MNT_LOCKED)\n\t\treturn -EINVAL;\n\tif (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))\n\t\treturn -EPERM;\n\treturn 0;\n}\n#else\nstatic int can_umount(const struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\n\tif (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))\n\t\treturn -EINVAL;\n\tif (!may_mount())\n\t\treturn -EPERM;\n\tif (path->dentry != path->mnt->mnt_root)\n\t\treturn -EINVAL;\n\tif (!check_mnt(mnt))\n\t\treturn -EINVAL;\n\tif (mnt->mnt.mnt_flags & MNT_LOCKED)\n\t\treturn -EINVAL;\n\tif (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))\n\t\treturn -EPERM;\n\treturn 0;\n}\n#endif\n\nint path_umount(struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\tint ret;\n\n\tret = can_umount(path, flags);\n\tif (!ret)\n\t\tret = do_umount(mnt, flags);\n\n\t\/* we mustn.t call path_put() as that would clear mnt_expiry_mark *\/\n\tdput(path->dentry);\n\tmntput_no_expire(mnt);\n\treturn ret;\n}\n#endif\n/' fs/namespace.c
+          grep -c "^int path_umount" fs/namespace.c
+
       # CONFIG_KPROBES ya está ausente por defecto en este defconfig
       # (confirmado: 0 apariciones) - es justo lo que pide la guía de
       # integración manual. Si estuviera activo, cualquiera podría
@@ -225,6 +239,7 @@ jobs:
             - CONFIG_OVERLAY_FS=y + CONFIG_KSU=y
             - Hooks en exec.c, open.c, read_write.c, stat.c
             - SafeMode habilitado (input.c) - CONFIG_KPROBES desactivado
+            - path_umount backporteado (fs/namespace.c) - arregla "Umount module"
           Sin overclock de CPU/GPU. Sin KCFLAGS de supresión de errores.
           ========================================
           EOF
