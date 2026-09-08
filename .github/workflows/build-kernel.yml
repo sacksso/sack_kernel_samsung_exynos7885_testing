@@ -114,7 +114,6 @@ jobs:
           sed -i 's/# CONFIG_CRYPTO_ZSTD is not set/CONFIG_CRYPTO_ZSTD=y/' \
             arch/arm64/configs/lineage_a7y18lte_defconfig
           grep "CONFIG_CRYPTO_ZSTD" arch/arm64/configs/lineage_a7y18lte_defconfig
-          # Si existe CONFIG_ZRAM_DEF_COMP, la cambiamos a zstd
           if grep -q "^CONFIG_ZRAM_DEF_COMP=" arch/arm64/configs/lineage_a7y18lte_defconfig; then
             sed -i 's/^CONFIG_ZRAM_DEF_COMP=.*/CONFIG_ZRAM_DEF_COMP="zstd"/' \
               arch/arm64/configs/lineage_a7y18lte_defconfig
@@ -124,7 +123,22 @@ jobs:
           grep "ZRAM_DEF_COMP" arch/arm64/configs/lineage_a7y18lte_defconfig
 
       # ============================================================
-      # 7. BFQ (con copia completa y verificaciones)
+      # 7. FIX PARA ERROR DE COMPILACIÓN EN kernel/sched/tune.h
+      # ============================================================
+
+      - name: Fix sched/tune.h - missing struct declarations
+        working-directory: kernel
+        run: |
+          # Añadir #include <linux/cpufreq.h> al principio del archivo
+          # y declarar struct freqvar_boost_data antes de usarlo.
+          perl -0777 -pi -e 's/^(#ifndef _LINUX_SCHED_TUNE_H\n#define _LINUX_SCHED_TUNE_H\n)/$1#include <linux/cpufreq.h>\nstruct freqvar_boost_data;\n/' \
+            kernel/sched/tune.h
+          # Verificar que se insertó
+          grep -n "include <linux/cpufreq.h>" kernel/sched/tune.h
+          grep -n "struct freqvar_boost_data;" kernel/sched/tune.h
+
+      # ============================================================
+      # 8. BFQ (con copia completa y verificaciones)
       # ============================================================
 
       - name: Port BFQ scheduler from donor kernel
@@ -169,7 +183,7 @@ jobs:
           grep "CONFIG_IOSCHED_BFQ" arch/arm64/configs/lineage_a7y18lte_defconfig
 
       # ============================================================
-      # 8. WIREGUARD (con copia completa y verificaciones)
+      # 9. WIREGUARD (con copia completa y verificaciones)
       # ============================================================
 
       - name: Port WireGuard from donor kernel
@@ -212,7 +226,7 @@ jobs:
           fi
 
       # ============================================================
-      # 9. COMPILACIÓN
+      # 10. COMPILACIÓN
       # ============================================================
 
       - name: Compile kernel
@@ -244,7 +258,7 @@ jobs:
           echo "Kernel compiled successfully"
 
       # ============================================================
-      # 10. EMPAQUETADO CON ANYKERNEL3
+      # 11. EMPAQUETADO CON ANYKERNEL3
       # ============================================================
 
       - name: Checkout AnyKernel3
@@ -276,6 +290,7 @@ jobs:
             - decon_clocks_table: double -> unsigned long
             - topology.c: corrección de sintaxis en HMP mask
             - nl80211_vendor.c: inicialización de country_code
+            - sched/tune.h: inclusión de cpufreq.h y declaración de struct
           Mejoras incluidas:
             - TCP congestion control: cubic (en lugar de bic)
             - schedutil como gobernador de CPU
@@ -290,13 +305,13 @@ jobs:
       - name: Create flashable ZIP
         run: |
           cd anykernel3
-          zip -r9 ../a7y18lte-Kernel-v2.zip . -x "*.git*"
+          zip -r9 ../a7y18lte-Kernel-v3.zip . -x "*.git*"
           cd ..
-          ls -lh a7y18lte-Kernel-v2.zip
+          ls -lh a7y18lte-Kernel-v3.zip
 
       - name: Upload final ZIP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: a7y18lte-Kernel-v2
-          path: a7y18lte-Kernel-v2.zip
+          name: a7y18lte-Kernel-v3
+          path: a7y18lte-Kernel-v3.zip
           if-no-files-found: error
