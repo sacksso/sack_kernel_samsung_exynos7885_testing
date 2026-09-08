@@ -130,6 +130,12 @@ jobs:
           echo ""
           echo "=== Cualquier uso de CONFIG_KPROBES dentro del arbol de kernelsu ==="
           grep -rn "CONFIG_KPROBES" drivers/kernelsu/ 2>/dev/null || true
+          echo ""
+          echo "=== TODAS las apariciones de las banderas (buscamos la DEFINICION con su valor inicial) ==="
+          grep -rn "ksu_execveat_hook\|ksu_vfs_read_hook" drivers/kernelsu/ 2>/dev/null || true
+          echo ""
+          echo "=== Contexto amplio alrededor de cada definicion 'bool ksu_' (sin extern) ==="
+          grep -rn -B3 -A3 "^bool ksu_\|^static bool ksu_" drivers/kernelsu/*.c 2>/dev/null || true
 
       # CONFIG_KSU depende de CONFIG_OVERLAY_FS, que está desactivado
       # en este defconfig. Agregar solo "CONFIG_KSU=y" sin esto hace
