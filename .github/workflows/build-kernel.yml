@@ -132,10 +132,10 @@ jobs:
           # Añadir #include <linux/cpufreq.h> al principio del archivo
           # y declarar struct freqvar_boost_data antes de usarlo.
           perl -0777 -pi -e 's|^(#ifndef _LINUX_SCHED_TUNE_H\n#define _LINUX_SCHED_TUNE_H\n)|$1#include <linux/cpufreq.h>\nstruct freqvar_boost_data;\n|' \
-            sched/tune.h
+            kernel/sched/tune.h
           # Verificar que se insertó
-          grep -n "include <linux/cpufreq.h>" sched/tune.h
-          grep -n "struct freqvar_boost_data;" sched/tune.h
+          grep -n "include <linux/cpufreq.h>" kernel/sched/tune.h
+          grep -n "struct freqvar_boost_data;" kernel/sched/tune.h
 
       # ============================================================
       # 8. BFQ (con copia completa y verificaciones)
