@@ -123,33 +123,20 @@ jobs:
           grep "ZRAM_DEF_COMP" arch/arm64/configs/lineage_a7y18lte_defconfig
 
       # ============================================================
-      # 7. FIX PARA ERROR DE COMPILACIÓN EN kernel/sched/tune.h
+      # 7. [DESACTIVADO TEMPORALMENTE] FIX PARA kernel/sched/tune.h
       # ============================================================
+      # Se desactiva este parche mientras se investiga la estructura real
+      # del archivo (no usa el guard #ifndef _LINUX_SCHED_TUNE_H que se
+      # asumía, y ya define su propio struct freqvar_boost_state).
+      # Si la compilación falla más adelante por "struct freqvar_boost_data"
+      # u otro símbolo indefinido en sched/tune.c o sched/tune.h, el log
+      # del compilador dará el archivo y línea exactos para escribir un
+      # fix preciso, en vez de seguir adivinando.
 
-      - name: Fix sched/tune.h - missing struct declarations
-        working-directory: kernel
+      - name: (Skipped) Fix sched/tune.h - missing struct declarations
         run: |
-          # Añadir #include <linux/cpufreq.h> y declarar struct freqvar_boost_data
-          # justo después de la línea "#define _LINUX_SCHED_TUNE_H", sin importar
-          # qué haya antes en el archivo (comentarios de licencia, etc.)
-          if ! grep -q "^#define _LINUX_SCHED_TUNE_H" kernel/sched/tune.h; then
-            echo "ERROR: no se encontró la línea del guard '#define _LINUX_SCHED_TUNE_H'."
-            echo "Primeras 15 líneas del archivo para depurar:"
-            head -n 15 kernel/sched/tune.h
-            exit 1
-          fi
-
-          if ! grep -q "#include <linux/cpufreq.h>" kernel/sched/tune.h; then
-            sed -i '/^#define _LINUX_SCHED_TUNE_H/a #include <linux/cpufreq.h>' kernel/sched/tune.h
-          fi
-
-          if ! grep -q "struct freqvar_boost_data;" kernel/sched/tune.h; then
-            sed -i '/^#define _LINUX_SCHED_TUNE_H/a struct freqvar_boost_data;' kernel/sched/tune.h
-          fi
-
-          # Verificar que se insertó
-          grep -n "include <linux/cpufreq.h>" kernel/sched/tune.h
-          grep -n "struct freqvar_boost_data;" kernel/sched/tune.h
+          echo "Paso desactivado temporalmente. Ver comentario en el workflow."
+          echo "Si la compilación falla por freqvar_boost_data, revisar kernel/sched/tune.h y kernel/sched/tune.c."
 
       # ============================================================
       # 8. BFQ (con copia completa y verificaciones)
