@@ -123,20 +123,39 @@ jobs:
           grep "ZRAM_DEF_COMP" arch/arm64/configs/lineage_a7y18lte_defconfig
 
       # ============================================================
-      # 7. [DESACTIVADO TEMPORALMENTE] FIX PARA kernel/sched/tune.h
+      # 7. FIX PARA ERROR REAL DE COMPILACIÓN EN kernel/sched/tune.h
       # ============================================================
-      # Se desactiva este parche mientras se investiga la estructura real
-      # del archivo (no usa el guard #ifndef _LINUX_SCHED_TUNE_H que se
-      # asumía, y ya define su propio struct freqvar_boost_state).
-      # Si la compilación falla más adelante por "struct freqvar_boost_data"
-      # u otro símbolo indefinido en sched/tune.c o sched/tune.h, el log
-      # del compilador dará el archivo y línea exactos para escribir un
-      # fix preciso, en vez de seguir adivinando.
+      # Confirmado por el log del compilador (kernel/exit.c -> tune.h:33-36):
+      # los stubs schedtune_freqvar_boost_init/exit() usan "struct cpufreq_policy"
+      # y "struct freqvar_boost_data" como punteros opacos en la firma, pero
+      # ninguno de los dos tipos está declarado antes de ese punto del archivo.
+      # Forward-declararlos es seguro incluso si CONFIG_FREQVAR_SCHEDTUNE se
+      # activa más adelante (una redeclaración "struct X;" nunca choca con la
+      # definición completa incluida vía <linux/cpufreq.h>).
 
-      - name: (Skipped) Fix sched/tune.h - missing struct declarations
+      - name: Fix sched/tune.h - forward declare cpufreq_policy and freqvar_boost_data
+        working-directory: kernel
         run: |
-          echo "Paso desactivado temporalmente. Ver comentario en el workflow."
-          echo "Si la compilación falla por freqvar_boost_data, revisar kernel/sched/tune.h y kernel/sched/tune.c."
+          ANCHOR='static inline int schedtune_freqvar_boost_init'
+
+          if ! grep -qF "$ANCHOR" kernel/sched/tune.h; then
+            echo "ERROR: no se encontró la línea ancla '$ANCHOR' en kernel/sched/tune.h."
+            echo "Primeras 40 líneas del archivo para depurar:"
+            head -n 40 kernel/sched/tune.h
+            exit 1
+          fi
+
+          if ! grep -q "^struct cpufreq_policy;" kernel/sched/tune.h; then
+            sed -i "/$ANCHOR/i struct cpufreq_policy;" kernel/sched/tune.h
+          fi
+
+          if ! grep -q "^struct freqvar_boost_data;" kernel/sched/tune.h; then
+            sed -i "/$ANCHOR/i struct freqvar_boost_data;" kernel/sched/tune.h
+          fi
+
+          # Verificar que se insertó, y en el orden correcto
+          grep -n "struct cpufreq_policy;" kernel/sched/tune.h
+          grep -n "struct freqvar_boost_data;" kernel/sched/tune.h
 
       # ============================================================
       # 8. BFQ (con copia completa y verificaciones)
