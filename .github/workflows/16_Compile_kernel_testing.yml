@@ -196,14 +196,7 @@ jobs:
             cp -v ../donor/net/ipv4/tcp_bbr.c net/ipv4/tcp_bbr.c
 
             if ! grep -q "^config TCP_CONG_BBR" net/ipv4/Kconfig; then
-              cat >> net/ipv4/Kconfig << 'EOF'
-
-config TCP_CONG_BBR
-	tristate "BBR TCP"
-	default n
-	---help---
-	  TCP BBR congestion control, portado desde el kernel donante.
-EOF
+              printf '\nconfig TCP_CONG_BBR\n\ttristate "BBR TCP"\n\tdefault n\n\t---help---\n\t  TCP BBR congestion control, portado desde el kernel donante.\n' >> net/ipv4/Kconfig
             fi
 
             grep -q "tcp_bbr.o" net/ipv4/Makefile || \
