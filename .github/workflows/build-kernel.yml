@@ -1,4 +1,4 @@
-name: Build Kernel for a7y18lte - Stable + Mejoras (schedutil, ZSTD, BFQ, WireGuard)
+name: Build Kernel for a7y18lte - Stable + Mejoras (schedutil, ZSTD, WireGuard)
 
 on:
   workflow_dispatch:
@@ -30,12 +30,10 @@ jobs:
           path: toolchain/aarch64
           fetch-depth: 1
 
-      - name: Checkout kernel donante (BFQ + WireGuard)
+      - name: Checkout kernel donante (WireGuard)
         uses: actions/checkout@v4
         with:
           repository: prashantpaddune/android_kernel_samsung_a7y18lte
-          # Si la rama por defecto no es master/main, especifícala:
-          # ref: master
           path: donor
           fetch-depth: 1
 
@@ -94,7 +92,7 @@ jobs:
           grep -n "^CONFIG_DEFAULT_TCP_CONG" arch/arm64/configs/lineage_a7y18lte_defconfig
 
       # ============================================================
-      # 5. SCHEDUTIL
+      # 5. SCHEDUTIL + dependencia FREQVAR_SCHEDTUNE
       # ============================================================
 
       - name: Enable schedutil governor
@@ -138,15 +136,8 @@ jobs:
           grep "ZRAM_DEF_COMP" arch/arm64/configs/lineage_a7y18lte_defconfig
 
       # ============================================================
-      # 7. FIX PARA ERROR REAL DE COMPILACIÓN EN kernel/sched/tune.h
+      # 7. FIX PARA sched/tune.h (error de compilación real)
       # ============================================================
-      # Confirmado por el log del compilador (kernel/exit.c -> tune.h:33-36):
-      # los stubs schedtune_freqvar_boost_init/exit() usan "struct cpufreq_policy"
-      # y "struct freqvar_boost_data" como punteros opacos en la firma, pero
-      # ninguno de los dos tipos está declarado antes de ese punto del archivo.
-      # Forward-declararlos es seguro incluso si CONFIG_FREQVAR_SCHEDTUNE se
-      # activa más adelante (una redeclaración "struct X;" nunca choca con la
-      # definición completa incluida vía <linux/cpufreq.h>).
 
       - name: Fix sched/tune.h - forward declare cpufreq_policy and freqvar_boost_data
         working-directory: kernel
@@ -168,88 +159,39 @@ jobs:
             sed -i "/$ANCHOR/i struct freqvar_boost_data;" kernel/sched/tune.h
           fi
 
-          # Verificar que se insertó, y en el orden correcto
+          # Verificar que se insertó
           grep -n "struct cpufreq_policy;" kernel/sched/tune.h
           grep -n "struct freqvar_boost_data;" kernel/sched/tune.h
 
       # ============================================================
-      # 8. BFQ (con copia completa y verificaciones)
+      # 8. FIX PARA arch_scale_freq_invariant (faltante en kernel 4.4)
       # ============================================================
 
-      - name: Port BFQ scheduler from donor kernel
+      - name: Fix arch_scale_freq_invariant for schedutil
         working-directory: kernel
         run: |
-          # 1. Copiar TODOS los archivos BFQ del donante (fuentes .c y .h)
-          # OJO: el header interno se llama "bfq.h" (sin guion) en este donante
-          # -- bfq-iosched.c hace "#include "bfq.h"" -- así que el patrón debe
-          # cubrir tanto "bfq.h" como "bfq-*.h" (antes solo copiábamos este
-          # segundo grupo y el build fallaba con "bfq.h: No such file or directory").
-          cp -v ../donor/block/bfq-*.c block/ 2>/dev/null || { echo "ERROR: No se encontraron .c de BFQ"; exit 1; }
-          cp -v ../donor/block/bfq*.h block/ 2>/dev/null || echo "No hay .h en block/, buscando en include/linux/..."
-          cp -v ../donor/include/linux/bfq*.h include/linux/ 2>/dev/null || echo "No hay .h en include/linux/"
-
-          # 2. Verificar que al menos los archivos principales existen
-          echo "=== Archivos BFQ en block/ ==="
-          ls -la block/bfq* 2>/dev/null || { echo "ERROR: No se copió ningún archivo BFQ"; exit 1; }
-          if [ ! -f block/bfq.h ]; then
-            echo "ADVERTENCIA: block/bfq.h no existe. Si bfq-iosched.c lo requiere, la compilación fallará más adelante."
-          fi
-          echo "=== Archivos BFQ en include/linux/ ==="
-          ls -la include/linux/bfq* 2>/dev/null || echo "No hay cabeceras en include/linux/ (puede ser normal)"
-
-          # 3. Modificar Kconfig.iosched
-          if ! grep -q "config IOSCHED_BFQ" block/Kconfig.iosched; then
-            cat >> block/Kconfig.iosched << 'EOF'
-
-          config IOSCHED_BFQ
-            tristate "BFQ I/O scheduler"
-            default y
-            ---help---
-              BFQ (Budget Fair Queueing) is a proportional-share I/O scheduler.
-              It provides low latency and fairness.
-          EOF
-          fi
-
-          # 4. Modificar Makefile
-          if ! grep -q "bfq" block/Makefile; then
-            echo "obj-\$(CONFIG_IOSCHED_BFQ) += bfq-iosched.o bfq-cgroup.o" >> block/Makefile
-          fi
-
-          # 5. Activar en defconfig
-          if grep -q "^# CONFIG_IOSCHED_BFQ is not set" arch/arm64/configs/lineage_a7y18lte_defconfig; then
-            sed -i 's/# CONFIG_IOSCHED_BFQ is not set/CONFIG_IOSCHED_BFQ=y/' \
-              arch/arm64/configs/lineage_a7y18lte_defconfig
-          else
-            echo "CONFIG_IOSCHED_BFQ=y" >> arch/arm64/configs/lineage_a7y18lte_defconfig
-          fi
-          grep "CONFIG_IOSCHED_BFQ" arch/arm64/configs/lineage_a7y18lte_defconfig
+          # Añadir definición de arch_scale_freq_invariant al principio del archivo
+          sed -i '1i #ifndef arch_scale_freq_invariant\n#define arch_scale_freq_invariant() false\n#endif' kernel/sched/cpufreq_schedutil.c
+          # Verificar que se insertó
+          grep -n "arch_scale_freq_invariant" kernel/sched/cpufreq_schedutil.c | head -5
 
       # ============================================================
-      # 9. WIREGUARD (con copia completa y verificaciones)
+      # 9. WIREGUARD (desde donante)
       # ============================================================
 
       - name: Port WireGuard from donor kernel
         working-directory: kernel
         run: |
-          # 1. Copiar todo el directorio net/wireguard del donante
           mkdir -p net/wireguard
           cp -rv ../donor/net/wireguard/* net/wireguard/ || { echo "ERROR: No se pudo copiar WireGuard"; exit 1; }
-
-          # 2. Verificar que hay archivos
           echo "=== Archivos WireGuard en net/wireguard/ ==="
           ls -la net/wireguard/*.c net/wireguard/*.h 2>/dev/null || { echo "ERROR: No se copió WireGuard"; exit 1; }
-
-          # 3. Modificar net/Kconfig
           if ! grep -q "net/wireguard/Kconfig" net/Kconfig; then
             sed -i '/^endmenu/i source "net/wireguard/Kconfig"' net/Kconfig
           fi
-
-          # 4. Modificar net/Makefile
           if ! grep -q "wireguard" net/Makefile; then
             echo "obj-\$(CONFIG_WIREGUARD) += wireguard/" >> net/Makefile
           fi
-
-          # 5. Activar en defconfig
           if grep -q "^# CONFIG_WIREGUARD is not set" arch/arm64/configs/lineage_a7y18lte_defconfig; then
             sed -i 's/# CONFIG_WIREGUARD is not set/CONFIG_WIREGUARD=y/' \
               arch/arm64/configs/lineage_a7y18lte_defconfig
@@ -257,8 +199,6 @@ jobs:
             echo "CONFIG_WIREGUARD=y" >> arch/arm64/configs/lineage_a7y18lte_defconfig
           fi
           grep "CONFIG_WIREGUARD" arch/arm64/configs/lineage_a7y18lte_defconfig
-
-          # 6. Copiar script de auto-actualización (si existe)
           if [ -f ../donor/scripts/fetch-latest-wireguard.sh ]; then
             cp ../donor/scripts/fetch-latest-wireguard.sh scripts/
             chmod +x scripts/fetch-latest-wireguard.sh
@@ -268,7 +208,7 @@ jobs:
           fi
 
       # ============================================================
-      # 10. COMPILACIÓN
+      # 10. COMPILACIÓN (sin BFQ)
       # ============================================================
 
       - name: Compile kernel
@@ -283,7 +223,6 @@ jobs:
           # Verificar que las opciones estén en .config
           grep -q "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" out/.config || { echo "ERROR: schedutil no activo"; exit 1; }
           grep -q "CONFIG_CRYPTO_ZSTD=y" out/.config || { echo "ERROR: ZSTD no activo"; exit 1; }
-          grep -q "CONFIG_IOSCHED_BFQ=y" out/.config || { echo "ERROR: BFQ no activo"; exit 1; }
           grep -q "CONFIG_WIREGUARD=y" out/.config || { echo "ERROR: WireGuard no activo"; exit 1; }
           if ! grep -q "CONFIG_FREQVAR_SCHEDTUNE=y" out/.config; then
             echo "ADVERTENCIA: CONFIG_FREQVAR_SCHEDTUNE no quedó activo en .config (puede que Kconfig lo haya desactivado por dependencias)."
@@ -336,13 +275,14 @@ jobs:
             - decon_clocks_table: double -> unsigned long
             - topology.c: corrección de sintaxis en HMP mask
             - nl80211_vendor.c: inicialización de country_code
-            - sched/tune.h: inclusión de cpufreq.h y declaración de struct
+            - sched/tune.h: forward declaration de cpufreq_policy y freqvar_boost_data
+            - cpufreq_schedutil.c: definición de arch_scale_freq_invariant para kernel 4.4
           Mejoras incluidas:
             - TCP congestion control: cubic (en lugar de bic)
             - schedutil como gobernador de CPU
             - ZSTD para zram (mejor compresión)
-            - BFQ I/O scheduler (sustituye a cfq)
-            - WireGuard (VPN moderno, con script de auto-actualización)
+            - WireGuard (VPN moderno)
+          Nota: BFQ se ha omitido temporalmente por incompatibilidad con kernel 4.4.
           Sin overclock. Sin KCFLAGS de supresión.
           ============================================================
           EOF
