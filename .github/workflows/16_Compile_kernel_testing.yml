@@ -164,29 +164,59 @@ jobs:
           grep -q "^#define arch_scale_freq_invariant" "$FILE" || { echo "ERROR: no se añadió arch_scale_freq_invariant"; exit 1; }
 
       # ============================================================
-      # 7b. TCP BBR + fq qdisc (compilado como opción disponible;
-      #     cubic sigue siendo el gobernador TCP por defecto al boot,
-      #     BBR se activa en runtime vía sysctl desde el script de init)
+      # 7b. fq qdisc (símbolo ya existente en este árbol 4.4, confirmado
+      #     por build anterior - CONFIG_NET_SCH_FQ=y en línea 998)
       # ============================================================
 
-      - name: Enable BBR congestion control and fq qdisc
+      - name: Enable fq qdisc
         working-directory: kernel
         run: |
           DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
-          if grep -q "^# CONFIG_TCP_CONG_BBR is not set" "$DEFCONFIG"; then
-            sed -i 's/# CONFIG_TCP_CONG_BBR is not set/CONFIG_TCP_CONG_BBR=y/' "$DEFCONFIG"
-          else
-            grep -q "^CONFIG_TCP_CONG_BBR=y" "$DEFCONFIG" || echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
-          fi
-          grep -q "CONFIG_TCP_CONG_BBR=y" "$DEFCONFIG" || { echo "ERROR: BBR no activado"; exit 1; }
-
           if grep -q "^# CONFIG_NET_SCH_FQ is not set" "$DEFCONFIG"; then
             sed -i 's/# CONFIG_NET_SCH_FQ is not set/CONFIG_NET_SCH_FQ=y/' "$DEFCONFIG"
           else
             grep -q "^CONFIG_NET_SCH_FQ=y" "$DEFCONFIG" || echo "CONFIG_NET_SCH_FQ=y" >> "$DEFCONFIG"
           fi
           grep -q "CONFIG_NET_SCH_FQ=y" "$DEFCONFIG" || { echo "ERROR: fq qdisc no activado"; exit 1; }
-          grep -n "CONFIG_TCP_CONG_BBR\|CONFIG_NET_SCH_FQ" "$DEFCONFIG"
+          grep -n "CONFIG_NET_SCH_FQ" "$DEFCONFIG"
+
+      # ============================================================
+      # 7b2. TCP BBR - PORT CONDICIONAL desde el donante
+      #      BBR llegó al kernel mainline en Linux 4.9 (net/ipv4/tcp_bbr.c),
+      #      este árbol es 4.4.302 y NO trae el símbolo Kconfig por defecto.
+      #      Si el donante lo tiene backporteado, se copia y se activa.
+      #      Si no, se omite SIN FALLAR el build (evita el error visto antes).
+      # ============================================================
+
+      - name: Port TCP BBR from donor if available (non-fatal)
+        working-directory: kernel
+        run: |
+          if [ -f ../donor/net/ipv4/tcp_bbr.c ]; then
+            echo "tcp_bbr.c encontrado en el donante -> portando"
+            cp -v ../donor/net/ipv4/tcp_bbr.c net/ipv4/tcp_bbr.c
+
+            if ! grep -q "^config TCP_CONG_BBR" net/ipv4/Kconfig; then
+              cat >> net/ipv4/Kconfig << 'EOF'
+
+config TCP_CONG_BBR
+	tristate "BBR TCP"
+	default n
+	---help---
+	  TCP BBR congestion control, portado desde el kernel donante.
+EOF
+            fi
+
+            grep -q "tcp_bbr.o" net/ipv4/Makefile || \
+              echo 'obj-$(CONFIG_TCP_CONG_BBR) += tcp_bbr.o' >> net/ipv4/Makefile
+
+            DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+            grep -q "^CONFIG_TCP_CONG_BBR=y" "$DEFCONFIG" || echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
+            echo "BBR_STATUS=ported" >> "$GITHUB_ENV"
+          else
+            echo "AVISO: net/ipv4/tcp_bbr.c NO existe en el donante."
+            echo "Este árbol es Linux 4.4 (BBR es de mainline 4.9+) - se omite BBR, se mantiene cubic+fq."
+            echo "BBR_STATUS=unavailable" >> "$GITHUB_ENV"
+          fi
 
       # ============================================================
       # 7c. KSM (Kernel Samepage Merging) - dedup de páginas de memoria
@@ -333,9 +363,14 @@ jobs:
             echo "ERROR: TCP cubic no configurado en .config"
             exit 1
           fi
-          grep -q "CONFIG_TCP_CONG_BBR=y" out/.config || { echo "ERROR: BBR no activo en .config"; exit 1; }
           grep -q "CONFIG_NET_SCH_FQ=y" out/.config || { echo "ERROR: fq qdisc no activo en .config"; exit 1; }
           grep -q "CONFIG_KSM=y" out/.config || { echo "ERROR: KSM no activo en .config"; exit 1; }
+          # BBR es opcional (depende de si el donante lo trae backporteado a 4.4) - no bloquea el build
+          if grep -q "CONFIG_TCP_CONG_BBR=y" out/.config; then
+            echo "BBR activo en .config (portado del donante)"
+          else
+            echo "AVISO: BBR no disponible en .config (BBR_STATUS=${BBR_STATUS:-unavailable}) - build continúa con cubic+fq"
+          fi
 
           echo "Todas las opciones están correctamente habilitadas en .config"
           make O=out -j"$(nproc)"
@@ -390,10 +425,11 @@ jobs:
             - lz4 como algoritmo de compresión para zram (zstd no soportado en kernel 4.4)
             - BFQ I/O scheduler (por defecto, con parche en Kconfig)
             - WireGuard (VPN moderno, compilado in-tree)
-            - TCP BBR + fq qdisc (compilado, se activa por script; boot sigue en cubic)
+            - fq qdisc (activo, compilado nativamente en este árbol)
+            - TCP BBR: ${BBR_STATUS:-unavailable} (ver log del step "Port TCP BBR from donor"; si es "unavailable" el kernel usa cubic+fq igual)
             - KSM (Kernel Samepage Merging, se activa por script)
           NOTA: build de TESTING. read_ahead_kb, dirty_ratio/dirty_background_ratio,
-          BBR y KSM se activan en runtime desde 99-kernel-tweaks.sh (fuera de este workflow).
+          fq/BBR y KSM se activan en runtime desde 99-kernel-tweaks.sh (fuera de este workflow).
           SELinux: Enforcing (sin cambios)
           ============================================================
           EOF
