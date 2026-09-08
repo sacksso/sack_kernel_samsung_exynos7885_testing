@@ -101,6 +101,36 @@ jobs:
           ls drivers/kernelsu
           grep -n "kernelsu" drivers/Makefile drivers/Kconfig
 
+      # ============================================================
+      # DIAGNOSTICO (2026-09-07, ronda 3): dejamos de inferir el
+      # comportamiento de ksud desde documentacion generica de KernelSU
+      # (que en su mayoria describe la rama "main" actual, GKI-only,
+      # no la v0.9.5 real que estamos usando). Volcamos al log del
+      # build el codigo fuente REAL que setup.sh acaba de descargar,
+      # para ver que hace de verdad ksu_handle_vfs_read /
+      # ksu_handle_execveat_ksud y si ksu_ksud_init depende de kprobe.
+      # ============================================================
+      - name: DIAGNOSTICO - volcar fuente real de KernelSU v0.9.5
+        working-directory: kernel
+        run: |
+          echo "=== ARCHIVOS EN drivers/kernelsu ==="
+          find drivers/kernelsu -name "*.c" -o -name "*.h"
+          echo ""
+          echo "=== kernelsu_init / kernel_init (que se llama bajo CONFIG_KPROBES) ==="
+          grep -n -B2 -A15 "kernelsu_init\|__init kernel_init" drivers/kernelsu/*.c 2>/dev/null || true
+          echo ""
+          echo "=== ksu_handle_execveat_ksud (definicion completa) ==="
+          grep -rn -B2 -A40 "^int ksu_handle_execveat_ksud\|^static.*ksu_handle_execveat_ksud" drivers/kernelsu/*.c 2>/dev/null || true
+          echo ""
+          echo "=== ksu_handle_vfs_read (definicion completa) ==="
+          grep -rn -B2 -A40 "^int ksu_handle_vfs_read\|^static.*ksu_handle_vfs_read" drivers/kernelsu/*.c 2>/dev/null || true
+          echo ""
+          echo "=== Referencias a post_fs_data / init.rc / on_boot_completed ==="
+          grep -rn -i "post_fs_data\|init\.rc\|boot_completed\|on_post_fs" drivers/kernelsu/*.c 2>/dev/null || true
+          echo ""
+          echo "=== Cualquier uso de CONFIG_KPROBES dentro del arbol de kernelsu ==="
+          grep -rn "CONFIG_KPROBES" drivers/kernelsu/ 2>/dev/null || true
+
       # CONFIG_KSU depende de CONFIG_OVERLAY_FS, que está desactivado
       # en este defconfig. Agregar solo "CONFIG_KSU=y" sin esto hace
       # que Kconfig lo descarte en silencio (mismo tipo de fallo
