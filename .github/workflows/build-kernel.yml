@@ -129,10 +129,24 @@ jobs:
       - name: Fix sched/tune.h - missing struct declarations
         working-directory: kernel
         run: |
-          # Añadir #include <linux/cpufreq.h> al principio del archivo
-          # y declarar struct freqvar_boost_data antes de usarlo.
-          perl -0777 -pi -e 's|^(#ifndef _LINUX_SCHED_TUNE_H\n#define _LINUX_SCHED_TUNE_H\n)|$1#include <linux/cpufreq.h>\nstruct freqvar_boost_data;\n|' \
-            kernel/sched/tune.h
+          # Añadir #include <linux/cpufreq.h> y declarar struct freqvar_boost_data
+          # justo después de la línea "#define _LINUX_SCHED_TUNE_H", sin importar
+          # qué haya antes en el archivo (comentarios de licencia, etc.)
+          if ! grep -q "^#define _LINUX_SCHED_TUNE_H" kernel/sched/tune.h; then
+            echo "ERROR: no se encontró la línea del guard '#define _LINUX_SCHED_TUNE_H'."
+            echo "Primeras 15 líneas del archivo para depurar:"
+            head -n 15 kernel/sched/tune.h
+            exit 1
+          fi
+
+          if ! grep -q "#include <linux/cpufreq.h>" kernel/sched/tune.h; then
+            sed -i '/^#define _LINUX_SCHED_TUNE_H/a #include <linux/cpufreq.h>' kernel/sched/tune.h
+          fi
+
+          if ! grep -q "struct freqvar_boost_data;" kernel/sched/tune.h; then
+            sed -i '/^#define _LINUX_SCHED_TUNE_H/a struct freqvar_boost_data;' kernel/sched/tune.h
+          fi
+
           # Verificar que se insertó
           grep -n "include <linux/cpufreq.h>" kernel/sched/tune.h
           grep -n "struct freqvar_boost_data;" kernel/sched/tune.h
