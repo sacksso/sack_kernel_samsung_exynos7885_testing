@@ -103,7 +103,7 @@ jobs:
           grep -n "struct freqvar_boost_data;" kernel/sched/tune.h
 
       # ============================================================
-      # 5. TCP CUBIC (CORREGIDO)
+      # 5. TCP CUBIC
       # ============================================================
 
       - name: Set default TCP congestion control to cubic
@@ -118,7 +118,7 @@ jobs:
           grep -n "^CONFIG_DEFAULT_TCP_CONG" arch/arm64/configs/lineage_a7y18lte_defconfig
 
       # ============================================================
-      # 6. SCHEDUTIL (con verificación)
+      # 6. SCHEDUTIL
       # ============================================================
 
       - name: Enable schedutil governor
@@ -133,7 +133,7 @@ jobs:
           grep -q "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" arch/arm64/configs/lineage_a7y18lte_defconfig || { echo "ERROR: schedutil no activado"; exit 1; }
           grep "CONFIG_CPU_FREQ_GOV_SCHEDUTIL" arch/arm64/configs/lineage_a7y18lte_defconfig
 
-          # Activar CONFIG_FREQVAR_SCHEDTUNE porque cpufreq_schedutil.c lo necesita
+          # Activar CONFIG_FREQVAR_SCHEDTUNE
           if grep -q "^# CONFIG_FREQVAR_SCHEDTUNE is not set" arch/arm64/configs/lineage_a7y18lte_defconfig; then
             sed -i 's/# CONFIG_FREQVAR_SCHEDTUNE is not set/CONFIG_FREQVAR_SCHEDTUNE=y/' \
               arch/arm64/configs/lineage_a7y18lte_defconfig
@@ -144,7 +144,7 @@ jobs:
           grep "CONFIG_FREQVAR_SCHEDTUNE" arch/arm64/configs/lineage_a7y18lte_defconfig
 
       # ============================================================
-      # 7. Fix arch_scale_freq_invariant (necesario para schedutil en 4.4)
+      # 7. Fix arch_scale_freq_invariant
       # ============================================================
 
       - name: Fix arch_scale_freq_invariant for schedutil
@@ -157,7 +157,7 @@ jobs:
           grep -q "arch_scale_freq_invariant" kernel/sched/cpufreq_schedutil.c || { echo "ERROR: no se añadió arch_scale_freq_invariant"; exit 1; }
 
       # ============================================================
-      # 8. ZSTD PARA ZRAM (con verificación)
+      # 8. ZSTD PARA ZRAM (solo driver, sin CONFIG_ZRAM_DEF_COMP)
       # ============================================================
 
       - name: Enable ZSTD compression for zram
@@ -172,31 +172,17 @@ jobs:
           grep -q "CONFIG_CRYPTO_ZSTD=y" arch/arm64/configs/lineage_a7y18lte_defconfig || { echo "ERROR: ZSTD no activado"; exit 1; }
           grep "CONFIG_CRYPTO_ZSTD" arch/arm64/configs/lineage_a7y18lte_defconfig
 
-          if grep -q "^CONFIG_ZRAM_DEF_COMP=" arch/arm64/configs/lineage_a7y18lte_defconfig; then
-            sed -i 's/^CONFIG_ZRAM_DEF_COMP=.*/CONFIG_ZRAM_DEF_COMP="zstd"/' \
-              arch/arm64/configs/lineage_a7y18lte_defconfig
-          else
-            echo 'CONFIG_ZRAM_DEF_COMP="zstd"' >> arch/arm64/configs/lineage_a7y18lte_defconfig
-          fi
-          grep -q 'CONFIG_ZRAM_DEF_COMP="zstd"' arch/arm64/configs/lineage_a7y18lte_defconfig || { echo "ERROR: ZRAM_DEF_COMP no activado"; exit 1; }
-          grep "ZRAM_DEF_COMP" arch/arm64/configs/lineage_a7y18lte_defconfig
-
       # ============================================================
-      # 9. BFQ (con verificación de copia y activación)
+      # 9. BFQ
       # ============================================================
 
       - name: Port BFQ scheduler from donor kernel
         working-directory: kernel
         run: |
-          # Copiar archivos BFQ del donante
           cp -v ../donor/block/bfq-*.c block/ || { echo "ERROR: No se copiaron .c de BFQ"; exit 1; }
           cp -v ../donor/block/bfq*.h block/ 2>/dev/null || echo "No se encontraron .h en block/"
           cp -v ../donor/include/linux/bfq*.h include/linux/ 2>/dev/null || echo "No se encontraron .h en include/linux/"
-
-          # Verificar que bfq-iosched.c y bfq.h existen
           ls -la block/bfq-iosched.c block/bfq.h || { echo "ERROR: faltan archivos BFQ"; exit 1; }
-
-          # Modificar Kconfig.iosched
           if ! grep -q "config IOSCHED_BFQ" block/Kconfig.iosched; then
             cat >> block/Kconfig.iosched << 'EOF'
 
@@ -208,13 +194,9 @@ jobs:
               It provides low latency and fairness.
           EOF
           fi
-
-          # Modificar Makefile
           if ! grep -q "bfq" block/Makefile; then
             echo "obj-\$(CONFIG_IOSCHED_BFQ) += bfq-iosched.o bfq-cgroup.o" >> block/Makefile
           fi
-
-          # Activar en defconfig
           if grep -q "^# CONFIG_IOSCHED_BFQ is not set" arch/arm64/configs/lineage_a7y18lte_defconfig; then
             sed -i 's/# CONFIG_IOSCHED_BFQ is not set/CONFIG_IOSCHED_BFQ=y/' \
               arch/arm64/configs/lineage_a7y18lte_defconfig
@@ -225,30 +207,21 @@ jobs:
           grep "CONFIG_IOSCHED_BFQ" arch/arm64/configs/lineage_a7y18lte_defconfig
 
       # ============================================================
-      # 10. WIREGUARD (con verificación de copia y activación)
+      # 10. WIREGUARD
       # ============================================================
 
       - name: Port WireGuard from donor kernel
         working-directory: kernel
         run: |
-          # Copiar todo el directorio net/wireguard del donante
           mkdir -p net/wireguard
           cp -rv ../donor/net/wireguard/* net/wireguard/ || { echo "ERROR: No se pudo copiar WireGuard"; exit 1; }
-
-          # Verificar que hay archivos
           ls -la net/wireguard/*.c net/wireguard/*.h 2>/dev/null || { echo "ERROR: No se copió WireGuard"; exit 1; }
-
-          # Modificar net/Kconfig
           if ! grep -q "net/wireguard/Kconfig" net/Kconfig; then
             sed -i '/^endmenu/i source "net/wireguard/Kconfig"' net/Kconfig
           fi
-
-          # Modificar net/Makefile
           if ! grep -q "wireguard" net/Makefile; then
             echo "obj-\$(CONFIG_WIREGUARD) += wireguard/" >> net/Makefile
           fi
-
-          # Activar en defconfig
           if grep -q "^# CONFIG_WIREGUARD is not set" arch/arm64/configs/lineage_a7y18lte_defconfig; then
             sed -i 's/# CONFIG_WIREGUARD is not set/CONFIG_WIREGUARD=y/' \
               arch/arm64/configs/lineage_a7y18lte_defconfig
@@ -259,7 +232,7 @@ jobs:
           grep "CONFIG_WIREGUARD" arch/arm64/configs/lineage_a7y18lte_defconfig
 
       # ============================================================
-      # 11. COMPILACIÓN (con verificaciones de .config)
+      # 11. COMPILACIÓN (verificaciones sin ZRAM_DEF_COMP)
       # ============================================================
 
       - name: Compile kernel
@@ -271,14 +244,11 @@ jobs:
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
           make O=out lineage_a7y18lte_defconfig
 
-          # Verificar que las opciones estén en .config (más robusto para TCP cubic)
           grep -q "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" out/.config || { echo "ERROR: schedutil no activo en .config"; exit 1; }
           grep -q "CONFIG_FREQVAR_SCHEDTUNE=y" out/.config || { echo "ERROR: FREQVAR_SCHEDTUNE no activo en .config"; exit 1; }
           grep -q "CONFIG_CRYPTO_ZSTD=y" out/.config || { echo "ERROR: ZSTD no activo en .config"; exit 1; }
-          grep -q 'CONFIG_ZRAM_DEF_COMP="zstd"' out/.config || { echo "ERROR: ZRAM_DEF_COMP no activo en .config"; exit 1; }
           grep -q "CONFIG_IOSCHED_BFQ=y" out/.config || { echo "ERROR: BFQ no activo en .config"; exit 1; }
           grep -q "CONFIG_WIREGUARD=y" out/.config || { echo "ERROR: WireGuard no activo en .config"; exit 1; }
-          # Verificación robusta para TCP cubic (acepta comillas dobles o simples o sin comillas)
           if ! grep -q 'CONFIG_DEFAULT_TCP_CONG="cubic"' out/.config && ! grep -q "CONFIG_DEFAULT_TCP_CONG='cubic'" out/.config && ! grep -q "CONFIG_DEFAULT_TCP_CONG=cubic" out/.config; then
             echo "ERROR: TCP cubic no configurado en .config"
             exit 1
@@ -327,7 +297,7 @@ jobs:
           Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
           Commit: $(git --git-dir=kernel/.git rev-parse --short HEAD 2>/dev/null || echo "unknown")
           ============================================================
-          Fixes base (obligatorios):
+          Fixes base:
             - decon_clocks_table: double -> unsigned long
             - topology.c: corrección de sintaxis en HMP mask
             - nl80211_vendor.c: inicialización de country_code
@@ -335,11 +305,10 @@ jobs:
           Mejoras incluidas:
             - TCP congestion control: cubic (en lugar de bic)
             - schedutil como gobernador de CPU
-            - ZSTD para zram (mejor compresión, activado por defecto)
-            - BFQ I/O scheduler (sustituye a cfq)
+            - ZSTD para zram (driver disponible, seleccionable en tiempo de ejecución)
+            - BFQ I/O scheduler
             - WireGuard (VPN moderno)
           SELinux: Enforcing (sin cambios)
-          Sin overclock. Sin KCFLAGS de supresión.
           ============================================================
           EOF
           cat anykernel3/build-info.txt
