@@ -104,6 +104,21 @@ jobs:
             arch/arm64/configs/lineage_a7y18lte_defconfig
           grep "CONFIG_CPU_FREQ_GOV_SCHEDUTIL" arch/arm64/configs/lineage_a7y18lte_defconfig
 
+          # kernel/sched/cpufreq_schedutil.c en este árbol llama a
+          # schedtune_freqvar_boost_init()/exit() de forma incondicional
+          # (sin #ifdef), y esas funciones acceden a tunables->freqvar_boost.
+          # Ese campo del struct sugov_tunables solo existe cuando
+          # CONFIG_FREQVAR_SCHEDTUNE está activo, así que hay que activarlo
+          # junto con schedutil o la compilación falla con
+          # "'struct sugov_tunables' has no member named 'freqvar_boost'".
+          if grep -q "^# CONFIG_FREQVAR_SCHEDTUNE is not set" arch/arm64/configs/lineage_a7y18lte_defconfig; then
+            sed -i 's/# CONFIG_FREQVAR_SCHEDTUNE is not set/CONFIG_FREQVAR_SCHEDTUNE=y/' \
+              arch/arm64/configs/lineage_a7y18lte_defconfig
+          elif ! grep -q "^CONFIG_FREQVAR_SCHEDTUNE=y" arch/arm64/configs/lineage_a7y18lte_defconfig; then
+            echo "CONFIG_FREQVAR_SCHEDTUNE=y" >> arch/arm64/configs/lineage_a7y18lte_defconfig
+          fi
+          grep "CONFIG_FREQVAR_SCHEDTUNE" arch/arm64/configs/lineage_a7y18lte_defconfig || true
+
       # ============================================================
       # 6. ZSTD PARA ZRAM
       # ============================================================
@@ -165,15 +180,22 @@ jobs:
         working-directory: kernel
         run: |
           # 1. Copiar TODOS los archivos BFQ del donante (fuentes .c y .h)
+          # OJO: el header interno se llama "bfq.h" (sin guion) en este donante
+          # -- bfq-iosched.c hace "#include "bfq.h"" -- así que el patrón debe
+          # cubrir tanto "bfq.h" como "bfq-*.h" (antes solo copiábamos este
+          # segundo grupo y el build fallaba con "bfq.h: No such file or directory").
           cp -v ../donor/block/bfq-*.c block/ 2>/dev/null || { echo "ERROR: No se encontraron .c de BFQ"; exit 1; }
-          cp -v ../donor/block/bfq-*.h block/ 2>/dev/null || echo "No hay .h en block/, buscando en include/linux/..."
-          cp -v ../donor/include/linux/bfq-*.h include/linux/ 2>/dev/null || echo "No hay .h en include/linux/"
+          cp -v ../donor/block/bfq*.h block/ 2>/dev/null || echo "No hay .h en block/, buscando en include/linux/..."
+          cp -v ../donor/include/linux/bfq*.h include/linux/ 2>/dev/null || echo "No hay .h en include/linux/"
 
           # 2. Verificar que al menos los archivos principales existen
           echo "=== Archivos BFQ en block/ ==="
-          ls -la block/bfq-* 2>/dev/null || { echo "ERROR: No se copió ningún archivo BFQ"; exit 1; }
+          ls -la block/bfq* 2>/dev/null || { echo "ERROR: No se copió ningún archivo BFQ"; exit 1; }
+          if [ ! -f block/bfq.h ]; then
+            echo "ADVERTENCIA: block/bfq.h no existe. Si bfq-iosched.c lo requiere, la compilación fallará más adelante."
+          fi
           echo "=== Archivos BFQ en include/linux/ ==="
-          ls -la include/linux/bfq-* 2>/dev/null || echo "No hay cabeceras en include/linux/ (puede ser normal)"
+          ls -la include/linux/bfq* 2>/dev/null || echo "No hay cabeceras en include/linux/ (puede ser normal)"
 
           # 3. Modificar Kconfig.iosched
           if ! grep -q "config IOSCHED_BFQ" block/Kconfig.iosched; then
@@ -263,6 +285,10 @@ jobs:
           grep -q "CONFIG_CRYPTO_ZSTD=y" out/.config || { echo "ERROR: ZSTD no activo"; exit 1; }
           grep -q "CONFIG_IOSCHED_BFQ=y" out/.config || { echo "ERROR: BFQ no activo"; exit 1; }
           grep -q "CONFIG_WIREGUARD=y" out/.config || { echo "ERROR: WireGuard no activo"; exit 1; }
+          if ! grep -q "CONFIG_FREQVAR_SCHEDTUNE=y" out/.config; then
+            echo "ADVERTENCIA: CONFIG_FREQVAR_SCHEDTUNE no quedó activo en .config (puede que Kconfig lo haya desactivado por dependencias)."
+            echo "Si la compilación falla por 'freqvar_boost' en cpufreq_schedutil.c, esta es la causa."
+          fi
           echo "Todas las opciones están correctamente habilitadas."
 
           make O=out -j"$(nproc)"
