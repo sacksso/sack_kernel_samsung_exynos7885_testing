@@ -153,11 +153,21 @@ jobs:
       - name: Fix arch_scale_freq_invariant for schedutil
         working-directory: kernel
         run: |
-          if ! grep -q "arch_scale_freq_invariant" kernel/sched/cpufreq_schedutil.c; then
-            sed -i '/^#include <linux\/sched.h>/a #ifndef arch_scale_freq_invariant\n#define arch_scale_freq_invariant() false\n#endif' \
-              kernel/sched/cpufreq_schedutil.c
+          FILE=kernel/sched/cpufreq_schedutil.c
+          # OJO: este archivo incluye "sched.h" (local), NO <linux/sched.h>.
+          # Y el archivo YA usa arch_scale_freq_invariant() en get_next_freq(),
+          # así que hay que comprobar el #define, no el uso.
+          if ! grep -q "^#define arch_scale_freq_invariant" "$FILE"; then
+            if ! grep -qF '#include "sched.h"' "$FILE"; then
+              echo "ERROR: no se encontró la línea ancla '#include \"sched.h\"' en $FILE"
+              head -n 25 "$FILE"
+              exit 1
+            fi
+            sed -i '/^#include "sched.h"/a #ifndef arch_scale_freq_invariant\n#define arch_scale_freq_invariant() false\n#endif' \
+              "$FILE"
           fi
-          grep -q "arch_scale_freq_invariant" kernel/sched/cpufreq_schedutil.c || { echo "ERROR: no se añadió arch_scale_freq_invariant"; exit 1; }
+          grep -q "^#define arch_scale_freq_invariant" "$FILE" || { echo "ERROR: no se añadió arch_scale_freq_invariant"; exit 1; }
+          grep -n "arch_scale_freq_invariant" "$FILE"
       # ============================================================
       # 8. ZSTD PARA ZRAM (solo driver, sin CONFIG_ZRAM_DEF_COMP)
       # ============================================================
@@ -194,8 +204,13 @@ jobs:
               It provides low latency and fairness.
           EOF
           fi
+          # IMPORTANTE: bfq-iosched.c hace "#include \"bfq-cgroup.c\"" internamente
+          # (línea ~199 en el donante). bfq-cgroup.c no tiene includes propios y
+          # NO se puede compilar como unidad de traducción independiente, o falla
+          # con decenas de errores de tipos no declarados (bfq_group, bfq_queue, etc).
+          # Por eso aquí solo se añade bfq-iosched.o, nunca bfq-cgroup.o.
           if ! grep -q "bfq" block/Makefile; then
-            echo "obj-\$(CONFIG_IOSCHED_BFQ) += bfq-iosched.o bfq-cgroup.o" >> block/Makefile
+            echo "obj-\$(CONFIG_IOSCHED_BFQ) += bfq-iosched.o" >> block/Makefile
           fi
           if grep -q "^# CONFIG_IOSCHED_BFQ is not set" arch/arm64/configs/lineage_a7y18lte_defconfig; then
             sed -i 's/# CONFIG_IOSCHED_BFQ is not set/CONFIG_IOSCHED_BFQ=y/' \
