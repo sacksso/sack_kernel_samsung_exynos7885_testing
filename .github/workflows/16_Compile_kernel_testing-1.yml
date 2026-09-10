@@ -64,9 +64,14 @@ jobs:
           echo "===== INPUT BOOSTER: quién lo usa (call sites) ====="
           echo "--- kernel propio ---"
           grep -rl "input_booster.h\|struct input_booster\|ib_send_event\|input_booster_send_event" kernel/drivers/input 2>/dev/null || echo "(ningún driver de input lo incluye)"
-          echo "--- Kconfig symbol INPUT_BOOSTER en cualquier parte ---"
-          grep -rn "config INPUT_BOOSTER" kernel donor 2>/dev/null || echo "(el símbolo Kconfig no existe en ningún árbol)"
 
+          echo
+          echo "--- Kconfig symbol INPUT_BOOSTER o SEC_INPUT_BOOSTER en cualquier parte ---"
+          grep -rn "config INPUT_BOOSTER\|config SEC_INPUT_BOOSTER\|SEC_INPUT_BOOSTER" kernel donor 2>/dev/null || echo "(ningún símbolo relacionado existe en ningún árbol)"
+
+          echo
+          echo "===== CONTENIDO COMPLETO de kernel/include/linux/input/input_booster.h ====="
+          cat kernel/include/linux/input/input_booster.h 2>/dev/null || echo "(el archivo no existe en esta rama/checkout)"
           echo
           echo "===== THERMAL: origen real de los trip points ====="
           echo "--- exynos_tmu.c: valores hardcodeados ---"
@@ -205,6 +210,23 @@ jobs:
             sed -i '/^#include "sched.h"/a #ifndef arch_scale_freq_invariant\n#define arch_scale_freq_invariant() false\n#endif' "$FILE"
           fi
           grep -q "^#define arch_scale_freq_invariant" "$FILE" || { echo "ERROR: no se añadió arch_scale_freq_invariant"; exit 1; }
+
+      # ============================================================
+      # 7a2. Thermal: trip points escribibles en runtime (confirmado que
+      #      vienen del device tree, symbol estándar de Linux, bajo riesgo)
+      # ============================================================
+
+      - name: Enable writable thermal trip points
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_THERMAL_WRITABLE_TRIPS is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_THERMAL_WRITABLE_TRIPS is not set/CONFIG_THERMAL_WRITABLE_TRIPS=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_THERMAL_WRITABLE_TRIPS=y" "$DEFCONFIG" || echo "CONFIG_THERMAL_WRITABLE_TRIPS=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_THERMAL_WRITABLE_TRIPS=y" "$DEFCONFIG" || { echo "ERROR: THERMAL_WRITABLE_TRIPS no activado"; exit 1; }
+          grep -n "CONFIG_THERMAL_WRITABLE_TRIPS" "$DEFCONFIG"
 
       # ============================================================
       # 7b. fq qdisc (símbolo ya existente en este árbol 4.4, confirmado
@@ -401,6 +423,7 @@ jobs:
           fi
           grep -q "CONFIG_NET_SCH_FQ=y" out/.config || { echo "ERROR: fq qdisc no activo en .config"; exit 1; }
           grep -q "CONFIG_KSM=y" out/.config || { echo "ERROR: KSM no activo en .config"; exit 1; }
+          grep -q "CONFIG_THERMAL_WRITABLE_TRIPS=y" out/.config || { echo "ERROR: THERMAL_WRITABLE_TRIPS no activo en .config"; exit 1; }
           # BBR es opcional (depende de si el donante lo trae backporteado a 4.4) - no bloquea el build
           if grep -q "CONFIG_TCP_CONG_BBR=y" out/.config; then
             echo "BBR activo en .config (portado del donante)"
