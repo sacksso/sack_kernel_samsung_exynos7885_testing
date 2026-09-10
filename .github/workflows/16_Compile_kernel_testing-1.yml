@@ -279,6 +279,30 @@ jobs:
           grep -n "CONFIG_TRANSPARENT_HUGEPAGE" "$DEFCONFIG"
 
       # ============================================================
+      # 7a4. FIX: bug real en fs/proc/task_mmu.c, nunca antes compilado
+      # ============================================================
+      # CONFIRMADO EN BUILD REAL: al activar THP por primera vez en este
+      # árbol, reclaim_pte_range() (feature propia de Samsung, no upstream)
+      # llama split_huge_page_pmd(vma, pmd, addr) pero la macro espera
+      # (vma, address, pmd) - argumentos 2 y 3 invertidos. Con THP siempre
+      # desactivado este código jamás se había compilado, por eso el bug
+      # nunca se vio. Error real:
+      #   fs/proc/task_mmu.c:1570:27: error: passing argument 2 of
+      #   '__split_huge_page_pmd' makes integer from pointer without a cast
+
+      - name: Fix swapped arguments in reclaim_pte_range (task_mmu.c)
+        working-directory: kernel
+        run: |
+          FILE=fs/proc/task_mmu.c
+          if ! grep -q "split_huge_page_pmd(vma, pmd, addr);" "$FILE"; then
+            echo "ERROR: no se encontró la línea esperada en $FILE (¿cambió el código fuente?)"
+            grep -n "split_huge_page_pmd" "$FILE"
+            exit 1
+          fi
+          sed -i 's/split_huge_page_pmd(vma, pmd, addr);/split_huge_page_pmd(vma, addr, pmd);/' "$FILE"
+          grep -n "split_huge_page_pmd(vma, addr, pmd);" "$FILE" || { echo "ERROR: no se aplicó el fix"; exit 1; }
+
+      # ============================================================
       # 7b. fq qdisc (símbolo ya existente en este árbol 4.4, confirmado
       #     por build anterior - CONFIG_NET_SCH_FQ=y en línea 998)
       # ============================================================
@@ -563,6 +587,39 @@ jobs:
           DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
           grep -q "^CONFIG_INPUT_BOOSTER=y" "$DEFCONFIG" || echo "CONFIG_INPUT_BOOSTER=y" >> "$DEFCONFIG"
           grep -n "CONFIG_INPUT_BOOSTER" "$DEFCONFIG"
+
+      # ============================================================
+      # 9c. FIX: variable huérfana en drivers/input/input.c al activar
+      #     CONFIG_INPUT_BOOSTER por primera vez en este árbol
+      # ============================================================
+      # CONFIRMADO EN BUILD REAL: este kernel Samsung ya trae un booster
+      # NATIVO dentro de input_event() (drivers/input/input.c), activo por
+      # defecto cuando CONFIG_INPUT_BOOSTER NO está definido (guardado con
+      # "#if !defined(CONFIG_INPUT_BOOSTER)"). Es decir, el símbolo ya
+      # existía en el código fuente original con el propósito exacto de
+      # "usar una implementación externa en vez de la nativa" - confirma
+      # que activar CONFIG_INPUT_BOOSTER es el mecanismo correcto.
+      #
+      # Al desactivar esa rama nativa por primera vez, queda huérfana la
+      # declaración "int idx;" (solo se usa dentro del bloque que ahora se
+      # excluye). Error real:
+      #   drivers/input/input.c:859:6: error: unused variable 'idx'
+      #   [-Werror=unused-variable]
+
+      - name: Fix orphaned idx variable in input.c after enabling INPUT_BOOSTER
+        working-directory: kernel
+        run: |
+          FILE=drivers/input/input.c
+          if ! grep -q "unsigned long flags;" "$FILE"; then
+            echo "ERROR: no se encontró el contexto esperado en $FILE"
+            exit 1
+          fi
+          # Mover la declaración de idx dentro del mismo #ifdef que la usa,
+          # en vez de dejarla huérfana a nivel de función.
+          perl -0pi -e 's/\tunsigned long flags;\n\tint idx;\n\n\tif \(is_event_supported/\tunsigned long flags;\n\n\tif (is_event_supported/' "$FILE"
+          perl -0pi -e 's/(#if !defined\(CONFIG_INPUT_BOOSTER\) \/\/ Input Booster \+\n)(\t\tif\(device_tree_infor)/$1\t\tint idx;\n\n$2/' "$FILE"
+          grep -n "int idx;" "$FILE" || { echo "ERROR: no se aplicó el fix"; exit 1; }
+          grep -c "int idx;" "$FILE"
 
       # ============================================================
       # 10. WIREGUARD
