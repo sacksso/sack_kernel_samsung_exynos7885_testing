@@ -83,6 +83,27 @@ jobs:
             grep -rl "trips\|cooling-maps\|polling-delay" kernel/arch/arm64/boot/dts/exynos 2>/dev/null | head -5
           echo "--- CONFIG_THERMAL en defconfig ---"
           grep -n "CONFIG_THERMAL\|CONFIG_EXYNOS_THERMAL" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null
+
+          echo
+          echo "===== SCHEDULER: sched_migration_cost_ns / sched_wakeup_granularity_ns ====="
+          echo "--- ¿CONFIG_SCHED_DEBUG habilitado? (sin esto los sysctl no existen en runtime) ---"
+          grep -n "CONFIG_SCHED_DEBUG" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null || echo "(símbolo no encontrado en defconfig)"
+          echo "--- valores default en el fuente ---"
+          grep -rn "sysctl_sched_migration_cost\s*=\|sysctl_sched_wakeup_granularity\s*=" kernel/kernel/sched/*.c 2>/dev/null
+
+          echo
+          echo "===== MEMORIA: watermark_scale_factor y THP ====="
+          echo "--- ¿existe watermark_scale_factor en este árbol? (llegó a mainline en 4.6, este kernel es 4.4) ---"
+          grep -rln "watermark_scale_factor" kernel/mm kernel/kernel/sysctl.c 2>/dev/null || echo "(no existe - confirmado: feature de kernel 4.6+, no portado a este árbol 4.4)"
+          echo "--- CONFIG_TRANSPARENT_HUGEPAGE en defconfig ---"
+          grep -n "CONFIG_TRANSPARENT_HUGEPAGE" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null
+          echo "--- modo default de THP en el fuente ---"
+          grep -n "TRANSPARENT_HUGEPAGE_.*_ALWAYS\|transparent_hugepage_flags" kernel/mm/huge_memory.c 2>/dev/null | head -10
+
+          echo
+          echo "===== GPU: gobernador DVFS del Mali (umbral de carga) ====="
+          find kernel/drivers/gpu/arm -iname "*platform*" -o -iname "*dvfs*" 2>/dev/null | head -20
+          grep -rln "upthreshold\|downthreshold\|utilisation\|simple_ondemand" kernel/drivers/gpu/arm 2>/dev/null | head -10
         continue-on-error: true
 
       # ============================================================
