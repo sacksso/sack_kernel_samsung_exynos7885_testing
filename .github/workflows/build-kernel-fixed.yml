@@ -1,0 +1,761 @@
+name: Build Kernel for a7y18lte - TESTING (schedutil, lz4, cubic, BFQ, WireGuard, BBR, KSM)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+
+      # ============================================================
+      # 1. CHECKOUTS
+      # ============================================================
+
+      - name: Checkout kernel
+        uses: actions/checkout@v4
+        with:
+          repository: exynos7885-dev/kernel_samsung_exynos7885
+          ref: lineage-18.1
+          path: kernel
+          fetch-depth: 1
+
+      - name: Checkout GCC 6.4.1 toolchain
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1
+          ref: lineage-18.1
+          path: toolchain/aarch64
+          fetch-depth: 1
+
+      - name: Checkout kernel donante (BFQ + WireGuard)
+        uses: actions/checkout@v4
+        with:
+          repository: prashantpaddune/android_kernel_samsung_a7y18lte
+          path: donor
+          fetch-depth: 1
+
+      # ============================================================
+      # 1b. DIAGNÓSTICO (no bloqueante): buscar infraestructura ya
+      #     existente en ambos árboles para touch boost y curva térmica,
+      #     antes de escribir cualquier parche a ciegas.
+      # ============================================================
+
+      - name: Investigate existing input-boost and thermal infrastructure
+        run: |
+          echo "===== INPUT BOOSTER (touch boost) ====="
+          echo "--- kernel propio ---"
+          find kernel -iname "*input_boost*" -o -iname "*input_booster*" 2>/dev/null
+          grep -rn "INPUT_BOOST\|input_booster\|cpu_input_boost" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig kernel/drivers/Kconfig 2>/dev/null || echo "(sin coincidencias en defconfig/drivers Kconfig)"
+          echo "--- donante ---"
+          find donor -iname "*input_boost*" -o -iname "*input_booster*" 2>/dev/null || echo "(sin archivos en donante)"
+
+          echo
+          echo "===== THERMAL (trip points / step_wise) ====="
+          echo "--- kernel propio ---"
+          find kernel/drivers/thermal -maxdepth 2 -type f 2>/dev/null
+          grep -rln "trip_point\|step_wise\|set_trip_temp" kernel/drivers/thermal 2>/dev/null || echo "(sin coincidencias en drivers/thermal)"
+          echo "--- donante ---"
+          find donor/drivers/thermal -maxdepth 2 -type f 2>/dev/null || echo "(sin drivers/thermal en donante)"
+
+          echo
+          echo "===== INPUT BOOSTER: quién lo usa (call sites) ====="
+          echo "--- kernel propio ---"
+          grep -rl "input_booster.h\|struct input_booster\|ib_send_event\|input_booster_send_event" kernel/drivers/input 2>/dev/null || echo "(ningún driver de input lo incluye)"
+
+          echo
+          echo "--- Kconfig symbol INPUT_BOOSTER o SEC_INPUT_BOOSTER en cualquier parte ---"
+          grep -rn "config INPUT_BOOSTER\|config SEC_INPUT_BOOSTER\|SEC_INPUT_BOOSTER" kernel donor 2>/dev/null || echo "(ningún símbolo relacionado existe en ningún árbol)"
+
+          echo
+          echo "===== CONTENIDO COMPLETO de kernel/include/linux/input/input_booster.h ====="
+          cat kernel/include/linux/input/input_booster.h 2>/dev/null || echo "(el archivo no existe en esta rama/checkout)"
+          echo
+          echo "===== THERMAL: origen real de los trip points ====="
+          echo "--- exynos_tmu.c: valores hardcodeados ---"
+          grep -n "trip_temp\|THRESHOLD\|_TEMP \|TMU_DEF\|#define.*TEMP" kernel/drivers/thermal/samsung/exynos_tmu.c 2>/dev/null | head -30
+          echo "--- ¿hay exynos_tmu_data.c? ---"
+          find kernel/drivers/thermal/samsung -type f
+          echo "--- trips/cooling-maps en device tree (exynos7885) ---"
+          grep -rl "trips\|cooling-maps\|polling-delay" kernel/arch/arm64/boot/dts/exynos 2>/dev/null | grep -i "7885\|a7y18" || \
+            grep -rl "trips\|cooling-maps\|polling-delay" kernel/arch/arm64/boot/dts/exynos 2>/dev/null | head -5
+          echo "--- CONFIG_THERMAL en defconfig ---"
+          grep -n "CONFIG_THERMAL\|CONFIG_EXYNOS_THERMAL" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null
+
+          echo
+          echo "===== SCHEDULER: sched_migration_cost_ns / sched_wakeup_granularity_ns ====="
+          echo "--- ¿CONFIG_SCHED_DEBUG habilitado? (sin esto los sysctl no existen en runtime) ---"
+          grep -n "CONFIG_SCHED_DEBUG" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null || echo "(símbolo no encontrado en defconfig)"
+          echo "--- valores default en el fuente ---"
+          grep -rn "sysctl_sched_migration_cost\s*=\|sysctl_sched_wakeup_granularity\s*=" kernel/kernel/sched/*.c 2>/dev/null
+
+          echo
+          echo "===== MEMORIA: watermark_scale_factor y THP ====="
+          echo "--- ¿existe watermark_scale_factor en este árbol? (llegó a mainline en 4.6, este kernel es 4.4) ---"
+          grep -rln "watermark_scale_factor" kernel/mm kernel/kernel/sysctl.c 2>/dev/null || echo "(no existe - confirmado: feature de kernel 4.6+, no portado a este árbol 4.4)"
+          echo "--- CONFIG_TRANSPARENT_HUGEPAGE en defconfig ---"
+          grep -n "CONFIG_TRANSPARENT_HUGEPAGE" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null
+          echo "--- modo default de THP en el fuente ---"
+          grep -n "TRANSPARENT_HUGEPAGE_.*_ALWAYS\|transparent_hugepage_flags" kernel/mm/huge_memory.c 2>/dev/null | head -10
+
+          echo
+          echo "===== GPU: gobernador DVFS del Mali (umbral de carga) ====="
+          find kernel/drivers/gpu/arm -iname "*platform*" -o -iname "*dvfs*" 2>/dev/null | head -20
+          grep -rln "upthreshold\|downthreshold\|utilisation\|simple_ondemand" kernel/drivers/gpu/arm 2>/dev/null | head -10
+          echo "--- contenido real: umbrales/carga en gpu_dvfs_governor.c ---"
+          grep -n "threshold\|utilization\|load\s*[<>]\|#define.*UP\|#define.*DOWN" kernel/drivers/gpu/arm/tMIx/r10p0/platform/exynos/gpu_dvfs_governor.c 2>/dev/null | head -40
+          echo "--- ¿otras versiones de driver además de r10p0/r3p0? ---"
+          find kernel/drivers/gpu/arm -maxdepth 2 -type d 2>/dev/null
+        continue-on-error: true
+
+      # ============================================================
+      # 2. DEPENDENCIAS
+      # ============================================================
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libncurses-dev \
+            git-core \
+            zip \
+            gcc-arm-linux-gnueabi
+
+      # ============================================================
+      # 3. FIXES BASE (obligatorios)
+      # ============================================================
+
+      - name: Fix decon_clocks_table
+        working-directory: kernel
+        run: |
+          sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' \
+            drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
+          grep -n "^const unsigned long decon_clocks_table" drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
+
+      - name: Fix topology.c warning
+        working-directory: kernel
+        run: |
+          sed -i 's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' \
+            arch/arm64/kernel/topology.c
+          grep -n "strlen(CONFIG_HMP_FAST_CPU_MASK)" arch/arm64/kernel/topology.c
+
+      - name: Fix nl80211 country_code
+        working-directory: kernel
+        run: |
+          sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' \
+            drivers/net/wireless/scsc/nl80211_vendor.c
+          grep -n "char country_code\[SLSI_COUNTRY_CODE_LEN\]" drivers/net/wireless/scsc/nl80211_vendor.c
+
+      # ============================================================
+      # 4. FIX sched/tune.h
+      # ============================================================
+
+      - name: Fix sched/tune.h - forward declare cpufreq_policy and freqvar_boost_data
+        working-directory: kernel
+        run: |
+          ANCHOR='static inline int schedtune_freqvar_boost_init'
+          if ! grep -qF "$ANCHOR" kernel/sched/tune.h; then
+            echo "ERROR: no se encontró la línea ancla '$ANCHOR' en kernel/sched/tune.h."
+            head -n 40 kernel/sched/tune.h
+            exit 1
+          fi
+          if ! grep -q "^struct cpufreq_policy;" kernel/sched/tune.h; then
+            sed -i "/$ANCHOR/i struct cpufreq_policy;" kernel/sched/tune.h
+          fi
+          if ! grep -q "^struct freqvar_boost_data;" kernel/sched/tune.h; then
+            sed -i "/$ANCHOR/i struct freqvar_boost_data;" kernel/sched/tune.h
+          fi
+          grep -n "struct cpufreq_policy;" kernel/sched/tune.h
+          grep -n "struct freqvar_boost_data;" kernel/sched/tune.h
+
+      # ============================================================
+      # 5. TCP CUBIC (fix: selección de choice)
+      # ============================================================
+
+      - name: Set default TCP congestion control to cubic
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          # Eliminar selecciones previas de la choice
+          sed -i '/^CONFIG_DEFAULT_BIC/d;/^CONFIG_DEFAULT_RENO/d;/^CONFIG_DEFAULT_WESTWOOD/d;/^CONFIG_DEFAULT_VEGAS/d;/^CONFIG_DEFAULT_HTCP/d;/^CONFIG_DEFAULT_TCP_CONG/d' "$DEFCONFIG"
+          # Asegurar que cubic esté compilado
+          grep -q "^CONFIG_TCP_CONG_CUBIC=y" "$DEFCONFIG" || echo "CONFIG_TCP_CONG_CUBIC=y" >> "$DEFCONFIG"
+          # Seleccionar cubic en la choice
+          echo "CONFIG_DEFAULT_CUBIC=y" >> "$DEFCONFIG"
+          grep -n "CONFIG_DEFAULT_CUBIC\|CONFIG_TCP_CONG_CUBIC" "$DEFCONFIG"
+
+      # ============================================================
+      # 6. SCHEDUTIL (compilado + gobernador por defecto)
+      # ============================================================
+
+      - name: Enable schedutil governor and set as default
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          # Habilitar schedutil
+          if grep -q "^# CONFIG_CPU_FREQ_GOV_SCHEDUTIL is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_CPU_FREQ_GOV_SCHEDUTIL is not set/CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y/' "$DEFCONFIG"
+          else
+            echo "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" "$DEFCONFIG" || { echo "ERROR: schedutil no activado"; exit 1; }
+          # Activar FREQVAR_SCHEDTUNE (necesario para cpufreq_schedutil.c)
+          if grep -q "^# CONFIG_FREQVAR_SCHEDTUNE is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_FREQVAR_SCHEDTUNE is not set/CONFIG_FREQVAR_SCHEDTUNE=y/' "$DEFCONFIG"
+          else
+            echo "CONFIG_FREQVAR_SCHEDTUNE=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_FREQVAR_SCHEDTUNE=y" "$DEFCONFIG" || { echo "ERROR: FREQVAR_SCHEDTUNE no activado"; exit 1; }
+          # Hacer schedutil el gobernador por defecto (quitar interactive)
+          sed -i '/^CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE/d;/^CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE/d;/^CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND/d;/^CONFIG_CPU_FREQ_DEFAULT_GOV_CONSERVATIVE/d;/^CONFIG_CPU_FREQ_DEFAULT_GOV_POWERSAVE/d;/^CONFIG_CPU_FREQ_DEFAULT_GOV_USERSPACE/d' "$DEFCONFIG"
+          echo "CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y" >> "$DEFCONFIG"
+          grep -n "CONFIG_CPU_FREQ_DEFAULT_GOV" "$DEFCONFIG"
+
+      # ============================================================
+      # 7. Fix arch_scale_freq_invariant (necesario para schedutil en 4.4)
+      # ============================================================
+
+      - name: Fix arch_scale_freq_invariant for schedutil
+        working-directory: kernel
+        run: |
+          FILE=kernel/sched/cpufreq_schedutil.c
+          if ! grep -q "^#define arch_scale_freq_invariant" "$FILE"; then
+            if ! grep -qF '#include "sched.h"' "$FILE"; then
+              echo "ERROR: no se encontró '#include \"sched.h\"' en $FILE"
+              head -n 25 "$FILE"
+              exit 1
+            fi
+            sed -i '/^#include "sched.h"/a #ifndef arch_scale_freq_invariant\n#define arch_scale_freq_invariant() false\n#endif' "$FILE"
+          fi
+          grep -q "^#define arch_scale_freq_invariant" "$FILE" || { echo "ERROR: no se añadió arch_scale_freq_invariant"; exit 1; }
+
+      # ============================================================
+      # 7a2. Thermal: trip points escribibles en runtime (confirmado que
+      #      vienen del device tree, symbol estándar de Linux, bajo riesgo)
+      # ============================================================
+
+      - name: Enable writable thermal trip points
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_THERMAL_WRITABLE_TRIPS is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_THERMAL_WRITABLE_TRIPS is not set/CONFIG_THERMAL_WRITABLE_TRIPS=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_THERMAL_WRITABLE_TRIPS=y" "$DEFCONFIG" || echo "CONFIG_THERMAL_WRITABLE_TRIPS=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_THERMAL_WRITABLE_TRIPS=y" "$DEFCONFIG" || { echo "ERROR: THERMAL_WRITABLE_TRIPS no activado"; exit 1; }
+          grep -n "CONFIG_THERMAL_WRITABLE_TRIPS" "$DEFCONFIG"
+
+      # ============================================================
+      # 7a3. Transparent Huge Pages: activar (estaba completamente
+      #      deshabilitado, symbol estándar de Linux, bajo riesgo)
+      # ============================================================
+
+      - name: Enable Transparent Huge Pages
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_TRANSPARENT_HUGEPAGE is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_TRANSPARENT_HUGEPAGE is not set/CONFIG_TRANSPARENT_HUGEPAGE=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_TRANSPARENT_HUGEPAGE=y" "$DEFCONFIG" || echo "CONFIG_TRANSPARENT_HUGEPAGE=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_TRANSPARENT_HUGEPAGE=y" "$DEFCONFIG" || { echo "ERROR: THP no activado"; exit 1; }
+          # MISMO PATRÓN QUE CUBIC/SCHEDUTIL: mm/Kconfig tiene una choice
+          # separada "Transparent Hugepage Support sysfs defaults" con
+          # default TRANSPARENT_HUGEPAGE_ALWAYS. Sin fijarla explícitamente,
+          # el build queda en modo "always" (mayor consumo de RAM sin
+          # garantía de beneficio) en vez de "madvise" (más seguro, solo
+          # apps que lo piden explícitamente lo usan).
+          sed -i '/^CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS/d' "$DEFCONFIG"
+          echo "CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y" >> "$DEFCONFIG"
+          grep -n "CONFIG_TRANSPARENT_HUGEPAGE" "$DEFCONFIG"
+
+      # ============================================================
+      # 7a4. FIX: bug real en fs/proc/task_mmu.c, nunca antes compilado
+      # ============================================================
+      # CONFIRMADO EN BUILD REAL: al activar THP por primera vez en este
+      # árbol, reclaim_pte_range() (feature propia de Samsung, no upstream)
+      # llama split_huge_page_pmd(vma, pmd, addr) pero la macro espera
+      # (vma, address, pmd) - argumentos 2 y 3 invertidos. Con THP siempre
+      # desactivado este código jamás se había compilado, por eso el bug
+      # nunca se vio. Error real:
+      #   fs/proc/task_mmu.c:1570:27: error: passing argument 2 of
+      #   '__split_huge_page_pmd' makes integer from pointer without a cast
+
+      - name: Fix swapped arguments in reclaim_pte_range (task_mmu.c)
+        working-directory: kernel
+        run: |
+          FILE=fs/proc/task_mmu.c
+          if ! grep -q "split_huge_page_pmd(vma, pmd, addr);" "$FILE"; then
+            echo "ERROR: no se encontró la línea esperada en $FILE (¿cambió el código fuente?)"
+            grep -n "split_huge_page_pmd" "$FILE"
+            exit 1
+          fi
+          sed -i 's/split_huge_page_pmd(vma, pmd, addr);/split_huge_page_pmd(vma, addr, pmd);/' "$FILE"
+          grep -n "split_huge_page_pmd(vma, addr, pmd);" "$FILE" || { echo "ERROR: no se aplicó el fix"; exit 1; }
+
+      # ============================================================
+      # 7b. fq qdisc (símbolo ya existente en este árbol 4.4, confirmado
+      #     por build anterior - CONFIG_NET_SCH_FQ=y en línea 998)
+      # ============================================================
+
+      - name: Enable fq qdisc
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_NET_SCH_FQ is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_NET_SCH_FQ is not set/CONFIG_NET_SCH_FQ=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_NET_SCH_FQ=y" "$DEFCONFIG" || echo "CONFIG_NET_SCH_FQ=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_NET_SCH_FQ=y" "$DEFCONFIG" || { echo "ERROR: fq qdisc no activado"; exit 1; }
+          grep -n "CONFIG_NET_SCH_FQ" "$DEFCONFIG"
+
+      # ============================================================
+      # 7b2. TCP BBR - PORT CONDICIONAL desde el donante
+      #      BBR llegó al kernel mainline en Linux 4.9 (net/ipv4/tcp_bbr.c),
+      #      este árbol es 4.4.302 y NO trae el símbolo Kconfig por defecto.
+      #      Si el donante lo tiene backporteado, se copia y se activa.
+      #      Si no, se omite SIN FALLAR el build (evita el error visto antes).
+      # ============================================================
+
+      - name: Port TCP BBR from donor if available (non-fatal)
+        working-directory: kernel
+        run: |
+          if [ -f ../donor/net/ipv4/tcp_bbr.c ]; then
+            echo "tcp_bbr.c encontrado en el donante -> portando"
+            cp -v ../donor/net/ipv4/tcp_bbr.c net/ipv4/tcp_bbr.c
+
+            if ! grep -q "^config TCP_CONG_BBR" net/ipv4/Kconfig; then
+              printf '\nconfig TCP_CONG_BBR\n\ttristate "BBR TCP"\n\tdefault n\n\t---help---\n\t  TCP BBR congestion control, portado desde el kernel donante.\n' >> net/ipv4/Kconfig
+            fi
+
+            grep -q "tcp_bbr.o" net/ipv4/Makefile || \
+              echo 'obj-$(CONFIG_TCP_CONG_BBR) += tcp_bbr.o' >> net/ipv4/Makefile
+
+            DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+            grep -q "^CONFIG_TCP_CONG_BBR=y" "$DEFCONFIG" || echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
+            echo "BBR_STATUS=ported" >> "$GITHUB_ENV"
+          else
+            echo "AVISO: net/ipv4/tcp_bbr.c NO existe en el donante."
+            echo "Este árbol es Linux 4.4 (BBR es de mainline 4.9+) - se omite BBR, se mantiene cubic+fq."
+            echo "BBR_STATUS=unavailable" >> "$GITHUB_ENV"
+          fi
+
+      # ============================================================
+      # 7c. KSM (Kernel Samepage Merging) - dedup de páginas de memoria
+      # ============================================================
+
+      - name: Enable KSM
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_KSM is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_KSM is not set/CONFIG_KSM=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_KSM=y" "$DEFCONFIG" || echo "CONFIG_KSM=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_KSM=y" "$DEFCONFIG" || { echo "ERROR: KSM no activado"; exit 1; }
+          grep -n "CONFIG_KSM" "$DEFCONFIG"
+
+      # ============================================================
+      # 8. ZRAM: activar lz4 (zstd no soportado en este kernel 4.4)
+      # ============================================================
+
+      - name: Enable lz4 compression for zram (zstd no compatible)
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          # Activar lz4 (el único backend adicional soportado por zram en 4.4)
+          if grep -q "^# CONFIG_ZRAM_LZ4_COMPRESS is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_ZRAM_LZ4_COMPRESS is not set/CONFIG_ZRAM_LZ4_COMPRESS=y/' "$DEFCONFIG"
+          else
+            echo "CONFIG_ZRAM_LZ4_COMPRESS=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_ZRAM_LZ4_COMPRESS=y" "$DEFCONFIG" || { echo "ERROR: ZRAM_LZ4_COMPRESS no activado"; exit 1; }
+          # También mantener CONFIG_CRYPTO_ZSTD (aunque no funcione con zram, puede ser útil para otros usos)
+          if grep -q "^# CONFIG_CRYPTO_ZSTD is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_CRYPTO_ZSTD is not set/CONFIG_CRYPTO_ZSTD=y/' "$DEFCONFIG"
+          else
+            echo "CONFIG_CRYPTO_ZSTD=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_CRYPTO_ZSTD=y" "$DEFCONFIG" || { echo "ERROR: ZSTD no activado"; exit 1; }
+
+      # ============================================================
+      # 9. BFQ (copiar y hacerlo el scheduler por defecto parcheando Kconfig)
+      # ============================================================
+
+      - name: Port BFQ scheduler and set as default
+        working-directory: kernel
+        run: |
+          # Copiar archivos BFQ del donante
+          cp -v ../donor/block/bfq-*.c block/ || { echo "ERROR: No se copiaron .c de BFQ"; exit 1; }
+          cp -v ../donor/block/bfq*.h block/ 2>/dev/null || echo "No se encontraron .h en block/"
+          cp -v ../donor/include/linux/bfq*.h include/linux/ 2>/dev/null || echo "No se encontraron .h en include/linux/"
+          ls -la block/bfq-iosched.c block/bfq.h || { echo "ERROR: faltan archivos BFQ"; exit 1; }
+
+          # Modificar Kconfig.iosched para añadir BFQ
+          if ! grep -q "config IOSCHED_BFQ" block/Kconfig.iosched; then
+            cat >> block/Kconfig.iosched << 'EOF'
+
+          config IOSCHED_BFQ
+            tristate "BFQ I/O scheduler"
+            default y
+            ---help---
+              BFQ (Budget Fair Queueing) is a proportional-share I/O scheduler.
+              It provides low latency and fairness.
+          EOF
+          fi
+
+          # Parchear Kconfig para añadir DEFAULT_BFQ en la choice "Default I/O scheduler"
+          # (porque no existe nativamente)
+          FILE=block/Kconfig.iosched
+          if ! grep -q "config DEFAULT_BFQ" "$FILE"; then
+            sed -i '/^endchoice/i\config DEFAULT_BFQ\n\tbool "BFQ" if IOSCHED_BFQ=y\n' "$FILE"
+          fi
+          if ! grep -q 'default "bfq" if DEFAULT_BFQ' "$FILE"; then
+            sed -i '/default "noop" if DEFAULT_NOOP/a\	default "bfq" if DEFAULT_BFQ' "$FILE"
+          fi
+          grep -q "config DEFAULT_BFQ" "$FILE" || { echo "ERROR: no se añadió DEFAULT_BFQ al Kconfig"; exit 1; }
+          grep -q 'default "bfq" if DEFAULT_BFQ' "$FILE" || { echo "ERROR: no se mapeó DEFAULT_IOSCHED a bfq"; exit 1; }
+
+          # Makefile: solo bfq-iosched.o (bfq-cgroup.c se incluye textualmente)
+          if ! grep -q "bfq" block/Makefile; then
+            echo "obj-\$(CONFIG_IOSCHED_BFQ) += bfq-iosched.o" >> block/Makefile
+          fi
+
+          # Activar en defconfig y seleccionar como default
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_IOSCHED_BFQ is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_IOSCHED_BFQ is not set/CONFIG_IOSCHED_BFQ=y/' "$DEFCONFIG"
+          else
+            echo "CONFIG_IOSCHED_BFQ=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_IOSCHED_BFQ=y" "$DEFCONFIG" || { echo "ERROR: BFQ no activado"; exit 1; }
+
+          # Eliminar default previo y establecer BFQ
+          sed -i '/^CONFIG_DEFAULT_DEADLINE/d;/^CONFIG_DEFAULT_CFQ/d;/^CONFIG_DEFAULT_NOOP/d;/^CONFIG_DEFAULT_IOSCHED/d' "$DEFCONFIG"
+          echo "CONFIG_DEFAULT_BFQ=y" >> "$DEFCONFIG"
+          grep -n "CONFIG_DEFAULT_BFQ\|CONFIG_DEFAULT_IOSCHED" "$DEFCONFIG" || true
+
+      # ============================================================
+      # 9b. INPUT BOOSTER (touch boost) para el panel Zinitix
+      # ============================================================
+      # DIAGNOSTICADO: el header original en el árbol era de un fork ajeno
+      # (Qualcomm/BIMC) e incompatible con lo que zinitix_zt75xx_ts.c y
+      # zinitix_bt532_ts.c realmente llaman (input_booster_send_event con
+      # BOOSTER_DEVICE_TOUCH / BOOSTER_MODE_ON|OFF|FORCE_OFF). Como
+      # CONFIG_INPUT_BOOSTER nunca existía, esos bloques nunca compilaban.
+      #
+      # Implementación nueva: al detectar contacto, pide temporalmente
+      # (vía PM QoS, mecanismo confirmado activo — exynos-acme.c registra
+      # notifier real para PM_QOS_CLUSTER1_FREQ_MIN) un piso de frecuencia
+      # en el cluster grande (Cortex-A73). Usa
+      # pm_qos_update_request_timeout(): expira solo a los 200ms, así un
+      # evento OFF perdido nunca deja la frecuencia clavada arriba.
+
+      - name: Implement input booster for Zinitix touch driver
+        working-directory: kernel
+        run: |
+          # Red de seguridad: confirmar que ningún otro archivo del árbol
+          # usa la API vieja del header antes de reemplazarlo.
+          if grep -rl "input_booster_allocate\|input_booster_get_default_setting\|input_booster_set_level_change" --include="*.c" . | grep -v "^./drivers/input/input_booster.c$"; then
+            echo "ERROR: hay otros archivos usando la API vieja del header, no se puede reemplazar a ciegas"
+            exit 1
+          fi
+
+          cat > include/linux/input/input_booster.h << 'EOF'
+          #ifndef _INPUT_BOOSTER_H_
+          #define _INPUT_BOOSTER_H_
+
+          /* API real consumida por los .c de drivers/input/touchscreen/zinitix
+           * El header original aquí era de un fork ajeno (Qualcomm/BIMC,
+           * campo bimc_freq) e incompatible - reemplazado tras diagnóstico. */
+
+          enum input_booster_device {
+          	BOOSTER_DEVICE_TOUCH = 0,
+          };
+
+          enum input_booster_mode {
+          	BOOSTER_MODE_OFF = 0,
+          	BOOSTER_MODE_ON,
+          	BOOSTER_MODE_FORCE_OFF,
+          };
+
+          void input_booster_send_event(int device, int mode);
+
+          #endif
+          EOF
+
+          cat > drivers/input/input_booster.c << 'EOF'
+          /*
+           * Minimal touch input booster - a7y18lte
+           *
+           * Al recibir BOOSTER_MODE_ON desde el driver táctil, pide
+           * temporalmente un piso de frecuencia en el cluster grande
+           * (Cortex-A73) vía PM QoS, para reducir la latencia del primer
+           * toque. El request expira solo a los BOOST_TIMEOUT_US, así un
+           * evento OFF perdido nunca deja la frecuencia clavada arriba.
+           */
+
+          #include <linux/module.h>
+          #include <linux/cpufreq.h>
+          #include <linux/cpumask.h>
+          #include <linux/pm_qos.h>
+          #include <linux/input/input_booster.h>
+
+          #define BOOST_TIMEOUT_US	200000U	/* 200 ms */
+          #define BOOST_PERCENT		70U	/* % del máximo detectado */
+
+          static struct pm_qos_request ib_qos_req;
+          static bool ib_qos_added;
+          static unsigned int boost_freq_khz;
+
+          static unsigned int input_booster_detect_boost_freq(void)
+          {
+          	unsigned int cpu, max_freq = 0, f;
+
+          	for_each_possible_cpu(cpu) {
+          		f = cpufreq_quick_get_max(cpu);
+          		if (f > max_freq)
+          			max_freq = f;
+          	}
+
+          	if (!max_freq)
+          		return 0;
+
+          	return (max_freq * BOOST_PERCENT) / 100;
+          }
+
+          void input_booster_send_event(int device, int mode)
+          {
+          	if (device != BOOSTER_DEVICE_TOUCH || !ib_qos_added)
+          		return;
+
+          	switch (mode) {
+          	case BOOSTER_MODE_ON:
+          		if (!boost_freq_khz)
+          			return;
+          		pm_qos_update_request_timeout(&ib_qos_req, boost_freq_khz,
+          					       BOOST_TIMEOUT_US);
+          		break;
+          	case BOOSTER_MODE_OFF:
+          	case BOOSTER_MODE_FORCE_OFF:
+          		pm_qos_update_request(&ib_qos_req,
+          				       PM_QOS_CLUSTER1_FREQ_MIN_DEFAULT_VALUE);
+          		break;
+          	}
+          }
+          EXPORT_SYMBOL(input_booster_send_event);
+
+          static int __init input_booster_init(void)
+          {
+          	boost_freq_khz = input_booster_detect_boost_freq();
+          	if (!boost_freq_khz) {
+          		pr_warn("input_booster: no se detectó freq maxima de CPU, deshabilitado\n");
+          		return 0;
+          	}
+
+          	pm_qos_add_request(&ib_qos_req, PM_QOS_CLUSTER1_FREQ_MIN,
+          			    PM_QOS_CLUSTER1_FREQ_MIN_DEFAULT_VALUE);
+          	ib_qos_added = true;
+          	pr_info("input_booster: activo, boost a %u kHz por %u ms\n",
+          		boost_freq_khz, BOOST_TIMEOUT_US / 1000);
+          	return 0;
+          }
+          late_initcall(input_booster_init);
+          EOF
+
+          # Kconfig
+          if ! grep -q "config INPUT_BOOSTER" drivers/input/Kconfig; then
+            printf '\nconfig INPUT_BOOSTER\n\tbool "Touch input booster (PM QoS, cluster grande)"\n\tdefault y\n\thelp\n\t  Boost temporal de frecuencia del cluster grande al tocar\n\t  la pantalla, vía PM QoS. Expira solo, sin tocar voltajes.\n' >> drivers/input/Kconfig
+          fi
+
+          # Makefile
+          grep -q "input_booster.o" drivers/input/Makefile || \
+            echo 'obj-$(CONFIG_INPUT_BOOSTER) += input_booster.o' >> drivers/input/Makefile
+
+          # defconfig
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          grep -q "^CONFIG_INPUT_BOOSTER=y" "$DEFCONFIG" || echo "CONFIG_INPUT_BOOSTER=y" >> "$DEFCONFIG"
+          grep -n "CONFIG_INPUT_BOOSTER" "$DEFCONFIG"
+
+      # ============================================================
+      # 9c. FIX: variable huérfana en drivers/input/input.c al activar
+      #     CONFIG_INPUT_BOOSTER por primera vez en este árbol
+      # ============================================================
+      # CONFIRMADO EN BUILD REAL: este kernel Samsung ya trae un booster
+      # NATIVO dentro de input_event() (drivers/input/input.c), activo por
+      # defecto cuando CONFIG_INPUT_BOOSTER NO está definido (guardado con
+      # "#if !defined(CONFIG_INPUT_BOOSTER)"). Es decir, el símbolo ya
+      # existía en el código fuente original con el propósito exacto de
+      # "usar una implementación externa en vez de la nativa" - confirma
+      # que activar CONFIG_INPUT_BOOSTER es el mecanismo correcto.
+      #
+      # Al desactivar esa rama nativa por primera vez, queda huérfana la
+      # declaración "int idx;" (solo se usa dentro del bloque que ahora se
+      # excluye). Error real:
+      #   drivers/input/input.c:859:6: error: unused variable 'idx'
+      #   [-Werror=unused-variable]
+
+      - name: Fix orphaned idx variable in input.c after enabling INPUT_BOOSTER
+        working-directory: kernel
+        run: |
+          FILE=drivers/input/input.c
+          if ! grep -q "unsigned long flags;" "$FILE"; then
+            echo "ERROR: no se encontró el contexto esperado en $FILE"
+            exit 1
+          fi
+          # Mover la declaración de idx dentro del mismo #ifdef que la usa,
+          # en vez de dejarla huérfana a nivel de función.
+          perl -0pi -e 's/\tunsigned long flags;\n\tint idx;\n\n\tif \(is_event_supported/\tunsigned long flags;\n\n\tif (is_event_supported/' "$FILE"
+          perl -0pi -e 's/(#if !defined\(CONFIG_INPUT_BOOSTER\) \/\/ Input Booster \+\n)(\t\tif\(device_tree_infor)/$1\t\tint idx;\n\n$2/' "$FILE"
+          grep -n "int idx;" "$FILE" || { echo "ERROR: no se aplicó el fix"; exit 1; }
+          grep -c "int idx;" "$FILE"
+
+      # ============================================================
+      # 10. WIREGUARD
+      # ============================================================
+
+      - name: Port WireGuard from donor kernel
+        working-directory: kernel
+        run: |
+          mkdir -p net/wireguard
+          cp -rv ../donor/net/wireguard/* net/wireguard/ || { echo "ERROR: No se pudo copiar WireGuard"; exit 1; }
+          ls -la net/wireguard/*.c net/wireguard/*.h 2>/dev/null || { echo "ERROR: No se copió WireGuard"; exit 1; }
+          if ! grep -q "net/wireguard/Kconfig" net/Kconfig; then
+            sed -i '/^endmenu/i source "net/wireguard/Kconfig"' net/Kconfig
+          fi
+          if ! grep -q "wireguard" net/Makefile; then
+            echo "obj-\$(CONFIG_WIREGUARD) += wireguard/" >> net/Makefile
+          fi
+          if grep -q "^# CONFIG_WIREGUARD is not set" arch/arm64/configs/lineage_a7y18lte_defconfig; then
+            sed -i 's/# CONFIG_WIREGUARD is not set/CONFIG_WIREGUARD=y/' \
+              arch/arm64/configs/lineage_a7y18lte_defconfig
+          else
+            echo "CONFIG_WIREGUARD=y" >> arch/arm64/configs/lineage_a7y18lte_defconfig
+          fi
+          grep -q "CONFIG_WIREGUARD=y" arch/arm64/configs/lineage_a7y18lte_defconfig || { echo "ERROR: WireGuard no activado"; exit 1; }
+
+      # ============================================================
+      # 11. COMPILACIÓN (con verificaciones de .config)
+      # ============================================================
+
+      - name: Compile kernel
+        working-directory: kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
+          export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+          make O=out lineage_a7y18lte_defconfig
+
+          # Verificaciones
+          grep -q "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" out/.config || { echo "ERROR: schedutil no activo en .config"; exit 1; }
+          grep -q "CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y" out/.config || { echo "ERROR: schedutil no es el gobernador por defecto en .config"; exit 1; }
+          grep -q "CONFIG_FREQVAR_SCHEDTUNE=y" out/.config || { echo "ERROR: FREQVAR_SCHEDTUNE no activo en .config"; exit 1; }
+          grep -q "CONFIG_CRYPTO_ZSTD=y" out/.config || { echo "ERROR: ZSTD no activo en .config"; exit 1; }
+          grep -q "CONFIG_ZRAM_LZ4_COMPRESS=y" out/.config || { echo "ERROR: ZRAM_LZ4_COMPRESS no activo en .config"; exit 1; }
+          grep -q "CONFIG_IOSCHED_BFQ=y" out/.config || { echo "ERROR: BFQ no activo en .config"; exit 1; }
+          grep -q "CONFIG_WIREGUARD=y" out/.config || { echo "ERROR: WireGuard no activo en .config"; exit 1; }
+          if ! grep -q 'CONFIG_DEFAULT_TCP_CONG="cubic"' out/.config && ! grep -q "CONFIG_DEFAULT_TCP_CONG='cubic'" out/.config && ! grep -q "CONFIG_DEFAULT_TCP_CONG=cubic" out/.config; then
+            echo "ERROR: TCP cubic no configurado en .config"
+            exit 1
+          fi
+          grep -q "CONFIG_NET_SCH_FQ=y" out/.config || { echo "ERROR: fq qdisc no activo en .config"; exit 1; }
+          grep -q "CONFIG_KSM=y" out/.config || { echo "ERROR: KSM no activo en .config"; exit 1; }
+          grep -q "CONFIG_THERMAL_WRITABLE_TRIPS=y" out/.config || { echo "ERROR: THERMAL_WRITABLE_TRIPS no activo en .config"; exit 1; }
+          grep -q "CONFIG_TRANSPARENT_HUGEPAGE=y" out/.config || { echo "ERROR: THP no activo en .config"; exit 1; }
+          grep -q "CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y" out/.config || { echo "ERROR: THP no quedó en modo madvise en .config"; exit 1; }
+          grep -q "CONFIG_INPUT_BOOSTER=y" out/.config || { echo "ERROR: INPUT_BOOSTER no activo en .config"; exit 1; }
+          # BBR es opcional (depende de si el donante lo trae backporteado a 4.4) - no bloquea el build
+          if grep -q "CONFIG_TCP_CONG_BBR=y" out/.config; then
+            echo "BBR activo en .config (portado del donante)"
+          else
+            echo "AVISO: BBR no disponible en .config (BBR_STATUS=${BBR_STATUS:-unavailable}) - build continúa con cubic+fq"
+          fi
+
+          echo "Todas las opciones están correctamente habilitadas en .config"
+          make O=out -j"$(nproc)"
+
+      - name: Verify kernel output
+        working-directory: kernel
+        run: |
+          ls -lh out/arch/arm64/boot/Image*
+          if [ ! -f out/arch/arm64/boot/Image ]; then
+            echo "ERROR: Image not generated"
+            exit 1
+          fi
+          echo "Kernel compiled successfully"
+
+      # ============================================================
+      # 12. EMPAQUETADO CON ANYKERNEL3
+      # ============================================================
+
+      - name: Checkout AnyKernel3
+        uses: actions/checkout@v4
+        with:
+          repository: sacksso/AnyKernel3-a7y18lte
+          path: anykernel3
+          fetch-depth: 1
+
+      - name: Copy Image to AnyKernel3
+        run: |
+          cp kernel/out/arch/arm64/boot/Image anykernel3/Image
+          ls -lh anykernel3/Image
+
+      - name: Create build-info.txt
+        run: |
+          cat > anykernel3/build-info.txt <<EOF
+          ============================================================
+          a7y18lte Kernel Build - TESTING (con mejoras extra)
+          ============================================================
+          Device: Samsung Galaxy A7 2018 (a7y18lte)
+          Model: SM-A750F/FN/G
+          Kernel: Linux 4.4.302
+          Compiler: GCC 6.4.1 (aarch64-linux-gnu) + gcc-arm-linux-gnueabi (32-bit)
+          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Commit: $(git --git-dir=kernel/.git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+          ============================================================
+          Fixes base:
+            - decon_clocks_table: double -> unsigned long
+            - topology.c: corrección de sintaxis en HMP mask
+            - nl80211_vendor.c: inicialización de country_code
+            - sched/tune.h: declaraciones forward de estructuras
+          Mejoras incluidas:
+            - TCP congestion control: cubic (en lugar de bic)
+            - schedutil como gobernador de CPU (por defecto)
+            - lz4 como algoritmo de compresión para zram (zstd no soportado en kernel 4.4)
+            - BFQ I/O scheduler (por defecto, con parche en Kconfig)
+            - WireGuard (VPN moderno, compilado in-tree)
+            - fq qdisc (activo, compilado nativamente en este árbol)
+            - TCP BBR: ${BBR_STATUS:-unavailable} (ver log del step "Port TCP BBR from donor"; si es "unavailable" el kernel usa cubic+fq igual)
+            - KSM (Kernel Samepage Merging, se activa por script)
+          NOTA: build de TESTING. read_ahead_kb, dirty_ratio/dirty_background_ratio,
+          fq/BBR y KSM se activan en runtime desde 99-kernel-tweaks.sh (fuera de este workflow).
+          SELinux: Enforcing (sin cambios)
+          ============================================================
+          EOF
+          cat anykernel3/build-info.txt
+
+      - name: Create flashable ZIP
+        run: |
+          cd anykernel3
+          zip -r9 ../a7y18lte-Kernel-testing.zip . -x "*.git*"
+          cd ..
+          ls -lh a7y18lte-Kernel-testing.zip
+
+      - name: Upload final ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7y18lte-Kernel-testing
+          path: a7y18lte-Kernel-testing.zip
+          if-no-files-found: error
