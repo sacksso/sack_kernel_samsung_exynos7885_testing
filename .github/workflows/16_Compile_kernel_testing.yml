@@ -38,6 +38,30 @@ jobs:
           fetch-depth: 1
 
       # ============================================================
+      # 1b. DIAGNÓSTICO (no bloqueante): buscar infraestructura ya
+      #     existente en ambos árboles para touch boost y curva térmica,
+      #     antes de escribir cualquier parche a ciegas.
+      # ============================================================
+
+      - name: Investigate existing input-boost and thermal infrastructure
+        run: |
+          echo "===== INPUT BOOSTER (touch boost) ====="
+          echo "--- kernel propio ---"
+          find kernel -iname "*input_boost*" -o -iname "*input_booster*" 2>/dev/null
+          grep -rn "INPUT_BOOST\|input_booster\|cpu_input_boost" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig kernel/drivers/Kconfig 2>/dev/null || echo "(sin coincidencias en defconfig/drivers Kconfig)"
+          echo "--- donante ---"
+          find donor -iname "*input_boost*" -o -iname "*input_booster*" 2>/dev/null || echo "(sin archivos en donante)"
+
+          echo
+          echo "===== THERMAL (trip points / step_wise) ====="
+          echo "--- kernel propio ---"
+          find kernel/drivers/thermal -maxdepth 2 -type f 2>/dev/null
+          grep -rln "trip_point\|step_wise\|set_trip_temp" kernel/drivers/thermal 2>/dev/null || echo "(sin coincidencias en drivers/thermal)"
+          echo "--- donante ---"
+          find donor/drivers/thermal -maxdepth 2 -type f 2>/dev/null || echo "(sin drivers/thermal en donante)"
+        continue-on-error: true
+
+      # ============================================================
       # 2. DEPENDENCIAS
       # ============================================================
 
