@@ -104,6 +104,10 @@ jobs:
           echo "===== GPU: gobernador DVFS del Mali (umbral de carga) ====="
           find kernel/drivers/gpu/arm -iname "*platform*" -o -iname "*dvfs*" 2>/dev/null | head -20
           grep -rln "upthreshold\|downthreshold\|utilisation\|simple_ondemand" kernel/drivers/gpu/arm 2>/dev/null | head -10
+          echo "--- contenido real: umbrales/carga en gpu_dvfs_governor.c ---"
+          grep -n "threshold\|utilization\|load\s*[<>]\|#define.*UP\|#define.*DOWN" kernel/drivers/gpu/arm/tMIx/r10p0/platform/exynos/gpu_dvfs_governor.c 2>/dev/null | head -40
+          echo "--- ¿otras versiones de driver además de r10p0/r3p0? ---"
+          find kernel/drivers/gpu/arm -maxdepth 2 -type d 2>/dev/null
         continue-on-error: true
 
       # ============================================================
@@ -250,6 +254,31 @@ jobs:
           grep -n "CONFIG_THERMAL_WRITABLE_TRIPS" "$DEFCONFIG"
 
       # ============================================================
+      # 7a3. Transparent Huge Pages: activar (estaba completamente
+      #      deshabilitado, symbol estándar de Linux, bajo riesgo)
+      # ============================================================
+
+      - name: Enable Transparent Huge Pages
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_TRANSPARENT_HUGEPAGE is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_TRANSPARENT_HUGEPAGE is not set/CONFIG_TRANSPARENT_HUGEPAGE=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_TRANSPARENT_HUGEPAGE=y" "$DEFCONFIG" || echo "CONFIG_TRANSPARENT_HUGEPAGE=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_TRANSPARENT_HUGEPAGE=y" "$DEFCONFIG" || { echo "ERROR: THP no activado"; exit 1; }
+          # MISMO PATRÓN QUE CUBIC/SCHEDUTIL: mm/Kconfig tiene una choice
+          # separada "Transparent Hugepage Support sysfs defaults" con
+          # default TRANSPARENT_HUGEPAGE_ALWAYS. Sin fijarla explícitamente,
+          # el build queda en modo "always" (mayor consumo de RAM sin
+          # garantía de beneficio) en vez de "madvise" (más seguro, solo
+          # apps que lo piden explícitamente lo usan).
+          sed -i '/^CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS/d' "$DEFCONFIG"
+          echo "CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y" >> "$DEFCONFIG"
+          grep -n "CONFIG_TRANSPARENT_HUGEPAGE" "$DEFCONFIG"
+
+      # ============================================================
       # 7b. fq qdisc (símbolo ya existente en este árbol 4.4, confirmado
       #     por build anterior - CONFIG_NET_SCH_FQ=y en línea 998)
       # ============================================================
@@ -394,6 +423,148 @@ jobs:
           grep -n "CONFIG_DEFAULT_BFQ\|CONFIG_DEFAULT_IOSCHED" "$DEFCONFIG" || true
 
       # ============================================================
+      # 9b. INPUT BOOSTER (touch boost) para el panel Zinitix
+      # ============================================================
+      # DIAGNOSTICADO: el header original en el árbol era de un fork ajeno
+      # (Qualcomm/BIMC) e incompatible con lo que zinitix_zt75xx_ts.c y
+      # zinitix_bt532_ts.c realmente llaman (input_booster_send_event con
+      # BOOSTER_DEVICE_TOUCH / BOOSTER_MODE_ON|OFF|FORCE_OFF). Como
+      # CONFIG_INPUT_BOOSTER nunca existía, esos bloques nunca compilaban.
+      #
+      # Implementación nueva: al detectar contacto, pide temporalmente
+      # (vía PM QoS, mecanismo confirmado activo — exynos-acme.c registra
+      # notifier real para PM_QOS_CLUSTER1_FREQ_MIN) un piso de frecuencia
+      # en el cluster grande (Cortex-A73). Usa
+      # pm_qos_update_request_timeout(): expira solo a los 200ms, así un
+      # evento OFF perdido nunca deja la frecuencia clavada arriba.
+
+      - name: Implement input booster for Zinitix touch driver
+        working-directory: kernel
+        run: |
+          # Red de seguridad: confirmar que ningún otro archivo del árbol
+          # usa la API vieja del header antes de reemplazarlo.
+          if grep -rl "input_booster_allocate\|input_booster_get_default_setting\|input_booster_set_level_change" --include="*.c" . | grep -v "^./drivers/input/input_booster.c$"; then
+            echo "ERROR: hay otros archivos usando la API vieja del header, no se puede reemplazar a ciegas"
+            exit 1
+          fi
+
+          cat > include/linux/input/input_booster.h << 'EOF'
+          #ifndef _INPUT_BOOSTER_H_
+          #define _INPUT_BOOSTER_H_
+
+          /* API real consumida por drivers/input/touchscreen/zinitix/*.c
+           * El header original aquí era de un fork ajeno (Qualcomm/BIMC,
+           * campo bimc_freq) e incompatible - reemplazado tras diagnóstico. */
+
+          enum input_booster_device {
+          	BOOSTER_DEVICE_TOUCH = 0,
+          };
+
+          enum input_booster_mode {
+          	BOOSTER_MODE_OFF = 0,
+          	BOOSTER_MODE_ON,
+          	BOOSTER_MODE_FORCE_OFF,
+          };
+
+          void input_booster_send_event(int device, int mode);
+
+          #endif
+          EOF
+
+          cat > drivers/input/input_booster.c << 'EOF'
+          /*
+           * Minimal touch input booster - a7y18lte
+           *
+           * Al recibir BOOSTER_MODE_ON desde el driver táctil, pide
+           * temporalmente un piso de frecuencia en el cluster grande
+           * (Cortex-A73) vía PM QoS, para reducir la latencia del primer
+           * toque. El request expira solo a los BOOST_TIMEOUT_US, así un
+           * evento OFF perdido nunca deja la frecuencia clavada arriba.
+           */
+
+          #include <linux/module.h>
+          #include <linux/cpufreq.h>
+          #include <linux/cpumask.h>
+          #include <linux/pm_qos.h>
+          #include <linux/input/input_booster.h>
+
+          #define BOOST_TIMEOUT_US	200000U	/* 200 ms */
+          #define BOOST_PERCENT		70U	/* % del máximo detectado */
+
+          static struct pm_qos_request ib_qos_req;
+          static bool ib_qos_added;
+          static unsigned int boost_freq_khz;
+
+          static unsigned int input_booster_detect_boost_freq(void)
+          {
+          	unsigned int cpu, max_freq = 0, f;
+
+          	for_each_possible_cpu(cpu) {
+          		f = cpufreq_quick_get_max(cpu);
+          		if (f > max_freq)
+          			max_freq = f;
+          	}
+
+          	if (!max_freq)
+          		return 0;
+
+          	return (max_freq * BOOST_PERCENT) / 100;
+          }
+
+          void input_booster_send_event(int device, int mode)
+          {
+          	if (device != BOOSTER_DEVICE_TOUCH || !ib_qos_added)
+          		return;
+
+          	switch (mode) {
+          	case BOOSTER_MODE_ON:
+          		if (!boost_freq_khz)
+          			return;
+          		pm_qos_update_request_timeout(&ib_qos_req, boost_freq_khz,
+          					       BOOST_TIMEOUT_US);
+          		break;
+          	case BOOSTER_MODE_OFF:
+          	case BOOSTER_MODE_FORCE_OFF:
+          		pm_qos_update_request(&ib_qos_req,
+          				       PM_QOS_CLUSTER1_FREQ_MIN_DEFAULT_VALUE);
+          		break;
+          	}
+          }
+          EXPORT_SYMBOL(input_booster_send_event);
+
+          static int __init input_booster_init(void)
+          {
+          	boost_freq_khz = input_booster_detect_boost_freq();
+          	if (!boost_freq_khz) {
+          		pr_warn("input_booster: no se detectó freq maxima de CPU, deshabilitado\n");
+          		return 0;
+          	}
+
+          	pm_qos_add_request(&ib_qos_req, PM_QOS_CLUSTER1_FREQ_MIN,
+          			    PM_QOS_CLUSTER1_FREQ_MIN_DEFAULT_VALUE);
+          	ib_qos_added = true;
+          	pr_info("input_booster: activo, boost a %u kHz por %u ms\n",
+          		boost_freq_khz, BOOST_TIMEOUT_US / 1000);
+          	return 0;
+          }
+          late_initcall(input_booster_init);
+          EOF
+
+          # Kconfig
+          if ! grep -q "config INPUT_BOOSTER" drivers/input/Kconfig; then
+            printf '\nconfig INPUT_BOOSTER\n\tbool "Touch input booster (PM QoS, cluster grande)"\n\tdefault y\n\thelp\n\t  Boost temporal de frecuencia del cluster grande al tocar\n\t  la pantalla, vía PM QoS. Expira solo, sin tocar voltajes.\n' >> drivers/input/Kconfig
+          fi
+
+          # Makefile
+          grep -q "input_booster.o" drivers/input/Makefile || \
+            echo 'obj-$(CONFIG_INPUT_BOOSTER) += input_booster.o' >> drivers/input/Makefile
+
+          # defconfig
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          grep -q "^CONFIG_INPUT_BOOSTER=y" "$DEFCONFIG" || echo "CONFIG_INPUT_BOOSTER=y" >> "$DEFCONFIG"
+          grep -n "CONFIG_INPUT_BOOSTER" "$DEFCONFIG"
+
+      # ============================================================
       # 10. WIREGUARD
       # ============================================================
 
@@ -445,6 +616,9 @@ jobs:
           grep -q "CONFIG_NET_SCH_FQ=y" out/.config || { echo "ERROR: fq qdisc no activo en .config"; exit 1; }
           grep -q "CONFIG_KSM=y" out/.config || { echo "ERROR: KSM no activo en .config"; exit 1; }
           grep -q "CONFIG_THERMAL_WRITABLE_TRIPS=y" out/.config || { echo "ERROR: THERMAL_WRITABLE_TRIPS no activo en .config"; exit 1; }
+          grep -q "CONFIG_TRANSPARENT_HUGEPAGE=y" out/.config || { echo "ERROR: THP no activo en .config"; exit 1; }
+          grep -q "CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y" out/.config || { echo "ERROR: THP no quedó en modo madvise en .config"; exit 1; }
+          grep -q "CONFIG_INPUT_BOOSTER=y" out/.config || { echo "ERROR: INPUT_BOOSTER no activo en .config"; exit 1; }
           # BBR es opcional (depende de si el donante lo trae backporteado a 4.4) - no bloquea el build
           if grep -q "CONFIG_TCP_CONG_BBR=y" out/.config; then
             echo "BBR activo en .config (portado del donante)"
