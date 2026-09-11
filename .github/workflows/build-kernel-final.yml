@@ -538,7 +538,15 @@ jobs:
           [ "$(grep -c '1300000 98   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1300000 no matcheo"; diff "$F.orig" "$F"; exit 1; }
           [ "$(grep -c '1200000 90   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1200000 no matcheo"; diff "$F.orig" "$F"; exit 1; }
           [ "$(grep -c '1100000 90   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1100000 no matcheo"; diff "$F.orig" "$F"; exit 1; }
-          grep -q "gpu_max_clock = <1300000>;" "$F" || {
+          # CORRECCION IMPORTANTE: el gpu_max_clock real de este dispositivo
+          # es 1100000, no 1300000 (confirmado por el log: exynos7885-mali.dtsi
+          # linea 25). Esto significa que las filas de la tabla para 1300000 y
+          # 1200000 son ALCANZABLES SOLO SI se sube gpu_max_clock por separado -
+          # hoy son entradas inertes, el gobernador nunca las selecciona porque
+          # estan por encima del techo real. No se toca gpu_max_clock aca (cero
+          # overclock, tal como se decidio), solo se corrige el valor esperado
+          # en la verificacion para que coincida con la realidad del DT.
+          grep -q "gpu_max_clock = <1100000>;" "$F" || {
             echo "ERROR: gpu_max_clock no coincide con el formato esperado."
             echo "Linea real en el archivo (para ajustar el patron):"
             grep -n "gpu_max_clock" "$F"
