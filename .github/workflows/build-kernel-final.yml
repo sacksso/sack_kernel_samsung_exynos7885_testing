@@ -547,6 +547,45 @@ jobs:
       # 12. EMPAQUETADO CON ANYKERNEL3
       # ============================================================
 
+      # ============================================================
+      # WATCHDOG DE SALUD DEL TOUCH IC (Imagis IST40XX)
+      # ============================================================
+      # Diagnóstico real: el único mecanismo de recovery que trae el
+      # driver original (ist40xx_request_reset) solo cuenta errores
+      # DENTRO del handler de interrupciones - si el IC deja de generar
+      # interrupciones por completo (silencio total, no errores), ese
+      # contador nunca sube y nunca se dispara un reset. Coincide con
+      # el síntoma reportado (táctil se traba, apagar/prender pantalla
+      # lo arregla al toque - eso fuerza un reset de hardware vía el
+      # path de resume). Esto agrega un chequeo activo cada ~5s (lectura
+      # liviana de un registro de estado ya usado en otras partes del
+      # driver) que fuerza un reset si el IC deja de responder por I2C,
+      # sin esperar a que el usuario apague la pantalla. Es código
+      # nuevo, no un port - probado solo por compilación aislada, no en
+      # equipo real todavía.
+
+      - name: Add touch IC health-check watchdog (Imagis IST40XX)
+        working-directory: kernel
+        run: |
+          F=drivers/input/touchscreen/imagis_40xx/ist40xx.c
+          H=drivers/input/touchscreen/imagis_40xx/ist40xx.h
+
+          perl -0777 -pi -e 's/(\tstruct delayed_work work_reset_check;\n)/$1\tstruct delayed_work work_health_check;\t\/* watchdog: IC silencioso *\/\n/' "$H"
+
+          perl -0777 -pi -e 's/(\}\n\n#ifdef IST40XX_NOISE_MODE\nstatic void noise_work_func)/}\n\nstatic void health_check_work_func(struct work_struct *work)\n{\n\tstruct delayed_work *delayed_work = to_delayed_work(work);\n\tstruct ist40xx_data *data =\n\t    container_of(delayed_work, struct ist40xx_data,\n\t\t\t work_health_check);\n\tu32 hc_val;\n\tint hc_ret;\n\n\tif (unlikely((data == NULL) || (data->client == NULL)))\n\t\treturn;\n\n\tif (unlikely(!data->initialized ||\n\t\t     data->status.sys_mode == STATE_POWER_OFF ||\n\t\t     data->status.update == 1 ||\n\t\t     data->status.calib >= 1 || data->status.miscalib >= 1))\n\t\treturn;\n\n\t\/* Lectura liviana de un registro de estado, solo para confirmar que\n\t * el IC sigue respondiendo por I2C. El reset por conteo de errores\n\t * (ist40xx_request_reset) solo cuenta fallos DENTRO del handler de\n\t * interrupciones - si el IC deja de generar interrupciones por\n\t * completo en vez de generarlas con errores, ese contador nunca\n\t * sube. Esto cierra ese hueco con un chequeo activo periodico. *\/\n\tmutex_lock(&data->lock);\n\thc_ret = ist40xx_read_reg(data->client, IST40XX_HIB_TOUCH_STATUS, &hc_val);\n\tmutex_unlock(&data->lock);\n\n\tif (unlikely(hc_ret)) {\n\t\tinput_info(true, &data->client->dev,\n\t\t\t   "%s: IC no responde al health-check, forzando reset\\n",\n\t\t\t   __func__);\n\t\tist40xx_scheduled_reset(data);\n\t}\n}\n\n#ifdef IST40XX_NOISE_MODE\nstatic void noise_work_func/' "$F"
+
+          perl -0pi -e 's/(\tINIT_DELAYED_WORK\(&data->work_reset_check, reset_work_func\);\n)/$1\tINIT_DELAYED_WORK(&data->work_health_check, health_check_work_func);\n/' "$F"
+
+          perl -0pi -e 's/(\tcancel_delayed_work_sync\(&data->work_reset_check\);\n)/$1\tcancel_delayed_work_sync(&data->work_health_check);\n/g' "$F"
+
+          perl -0777 -pi -e 's/(if \(data->irq_working \|\| !data->initialized \|\| data->rec_mode\)\n\t\tgoto restart_timer;\n\n)(\tif \(status->event_mode\) \{\n\t\tif \(likely)/$1\tif (likely(status->event_mode) \&\& status->sys_mode != STATE_POWER_OFF) {\n\t\tstatic int hc_tick;\n\t\tif (++hc_tick >= 10) {\t\/* cada ~5s (timer corre cada 500ms) *\/\n\t\t\thc_tick = 0;\n\t\t\tschedule_delayed_work(&data->work_health_check, 0);\n\t\t}\n\t}\n\n$2/' "$F"
+
+          echo "--- Verificación: cada inserción debe dar exactamente el conteo esperado ---"
+          [ "$(grep -c 'work_health_check' "$H")" = "1" ] || { echo "ERROR: campo del struct no se insertó (o se duplicó)"; exit 1; }
+          [ "$(grep -c 'work_health_check' "$F")" = "5" ] || { echo "ERROR: conteo inesperado en ist40xx.c"; exit 1; }
+          [ "$(grep -c 'health_check_work_func' "$F")" = "2" ] || { echo "ERROR: función no se insertó (o se duplicó)"; exit 1; }
+          echo "OK: las 5 inserciones aplicaron exactamente una vez cada una"
+
       - name: Checkout AnyKernel3
         uses: actions/checkout@v4
         with:
