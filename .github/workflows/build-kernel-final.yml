@@ -493,6 +493,78 @@ jobs:
           grep -q "CONFIG_WIREGUARD=y" arch/arm64/configs/lineage_a7y18lte_defconfig || { echo "ERROR: WireGuard no activado"; exit 1; }
 
       # ============================================================
+      # GAMING TUNING 1/2: umbrales GPU - alinear las 3 filas de arriba
+      # de gpu_dvfs_table al mismo patrón (max=95) que ya usa el resto
+      # de la tabla. Confirmado con gpu_dvfs_governor.c real (b_r26p0,
+      # el que de verdad compila este defconfig - ver diagnostico
+      # previo con Kbuild): max_threshold=100 en el escalon actual
+      # exige ~100% de uso sostenido para subir de escalon, algo que
+      # casi nunca se toca en gaming real. NO se toca ninguna frecuencia
+      # (gpu_max_clock sigue en 1300000, sin overclock), ni la tabla de
+      # throttling termico (gpu_temp_throttling intacta).
+      # ============================================================
+
+      - name: Tune GPU DVFS thresholds for gaming (top 3 steps)
+        working-directory: kernel
+        run: |
+          F=$(grep -rl "gpu_dvfs_table_size" arch/arm64/boot/dts 2>/dev/null | head -1)
+          if [ -z "$F" ]; then
+            echo "ERROR: no se encontro el archivo con gpu_dvfs_table_size en el arbol de dts"
+            exit 1
+          fi
+          echo "Archivo encontrado: $F"
+          cp "$F" "$F.orig"
+
+          perl -0777 -pi -e 's/1300000 98  100  1/1300000 98   95  1/' "$F"
+          perl -0777 -pi -e 's/1200000 98  100  1/1200000 90   95  1/' "$F"
+          perl -0777 -pi -e 's/1100000 90  100  1/1100000 90   95  1/' "$F"
+
+          echo "--- Verificacion (Regla 8): exactamente 1 coincidencia por fila tocada, y las filas de abajo intactas ---"
+          [ "$(grep -c '1300000 98   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1300000 no matcheo"; diff "$F.orig" "$F"; exit 1; }
+          [ "$(grep -c '1200000 90   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1200000 no matcheo"; diff "$F.orig" "$F"; exit 1; }
+          [ "$(grep -c '1100000 90   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1100000 no matcheo"; diff "$F.orig" "$F"; exit 1; }
+          grep -q "gpu_max_clock = <1300000>;" "$F" || { echo "ERROR: gpu_max_clock cambio, no debia tocarse"; exit 1; }
+          grep -q "gpu_temp_throttling = <845000 676000 450000 343000 343000 343000>;" "$F" || { echo "ERROR: tabla termica cambio, no debia tocarse"; exit 1; }
+          echo "--- Diff completo aplicado ---"
+          diff "$F.orig" "$F" || true
+          rm "$F.orig"
+
+      # ============================================================
+      # GAMING TUNING 2/2: techo de boost tactil (input_booster nativo
+      # de Samsung, ya activo - ver decision de NO reimplementar esto
+      # con CONFIG_INPUT_BOOSTER, mas arriba en este mismo workflow).
+      # Se sube el techo de TOUCH y MULTITOUCH de 1144000 a 2184000 -
+      # este ultimo es el maximo REAL y confirmado de la BIG (el mismo
+      # valor que se uso para descartar el overclock en su momento, no
+      # es un numero nuevo/inventado). Se deja todo lo demas igual:
+      # duraciones (head/tail/phase_times), niveles de KEY/TOUCHKEY/
+      # KEYBOARD, y los pisos de kfc/mif/int.
+      # ============================================================
+
+      - name: Tune native touch input-booster ceiling for gaming
+        working-directory: kernel
+        run: |
+          F=$(grep -rl 'input_booster,label = "TOUCH"' arch/arm64/boot/dts 2>/dev/null | head -1)
+          if [ -z "$F" ]; then
+            echo "ERROR: no se encontro el archivo con el nodo input_booster TOUCH"
+            exit 1
+          fi
+          echo "Archivo encontrado: $F"
+          cp "$F" "$F.orig"
+
+          perl -0777 -pi -e 's/(input_booster,label = "TOUCH";.*?input_booster,cpu_freqs = <)1144000 1144000 936000(>;)/${1}2184000 2184000 2184000${2}/s' "$F"
+          perl -0777 -pi -e 's/(input_booster,label = "MULTITOUCH";.*?input_booster,cpu_freqs = <)1144000 936000(>;)/${1}2184000 2184000${2}/s' "$F"
+
+          echo "--- Verificacion (Regla 8) ---"
+          grep -A12 'label = "TOUCH"' "$F" | grep -q "cpu_freqs = <2184000 2184000 2184000>;" || { echo "ERROR: TOUCH no se actualizo"; diff "$F.orig" "$F"; exit 1; }
+          grep -A12 'label = "MULTITOUCH"' "$F" | grep -q "cpu_freqs = <2184000 2184000>;" || { echo "ERROR: MULTITOUCH no se actualizo"; diff "$F.orig" "$F"; exit 1; }
+          grep -A12 'label = "KEY"' "$F" | grep -q "cpu_freqs = <1144000>;" || { echo "ERROR: KEY se toco sin querer"; exit 1; }
+          grep -A12 'label = "TOUCHKEY"' "$F" | grep -q "cpu_freqs = <1144000>;" || { echo "ERROR: TOUCHKEY se toco sin querer"; exit 1; }
+          echo "--- Diff completo aplicado ---"
+          diff "$F.orig" "$F" || true
+          rm "$F.orig"
+
+      # ============================================================
       # 11. COMPILACIÓN (con verificaciones de .config)
       # ============================================================
 
@@ -598,6 +670,39 @@ jobs:
           cp kernel/out/arch/arm64/boot/Image anykernel3/Image
           ls -lh anykernel3/Image
 
+      # ============================================================
+      # FIX CRITICO: anykernel.sh (revisado) no define ninguna variable
+      # dtb= ni maneja el DTB de forma explicita - solo llama a
+      # dump_boot/write_boot (libreria estandar de AnyKernel3). Sin un
+      # archivo llamado "dtb" en la raiz del ZIP, esa libreria CONSERVA
+      # el DTB que ya esta en el boot.img actual del telefono, sin
+      # tocarlo - lo que significa que los cambios de GAMING TUNING
+      # (gpu_dvfs_table, input_booster) compilarian bien pero NUNCA
+      # llegarian al equipo. Este step busca el .dtb real generado por
+      # el build (por nombre de dispositivo, para no adivinar entre
+      # varios .dtb si el arbol genera mas de uno) y lo copia a la raiz
+      # del ZIP con el nombre que ak3-core.sh espera.
+      # ============================================================
+
+      - name: Copy compiled DTB to AnyKernel3 (dtb changes won't apply without this)
+        run: |
+          echo "--- .dtb generados por este build ---"
+          find kernel/out/arch/arm64/boot/dts -name "*.dtb" 2>/dev/null
+          CANDIDATES=$(find kernel/out/arch/arm64/boot/dts -iname "*a7y18lte*.dtb" -o -iname "*a750*.dtb" 2>/dev/null)
+          COUNT=$(echo "$CANDIDATES" | grep -c . || true)
+          if [ "$COUNT" -eq 1 ]; then
+            DTB="$CANDIDATES"
+          else
+            echo "AVISO: no se identifico un .dtb inequivoco por nombre de dispositivo (encontrados: $COUNT)."
+            echo "Candidatos por nombre de SoC (exynos7885), puede haber mas de uno para distintas placas:"
+            find kernel/out/arch/arm64/boot/dts -iname "*7885*.dtb" 2>/dev/null
+            echo "ERROR: confirmar manualmente cual .dtb corresponde a a7y18lte antes de continuar - no se adivina"
+            exit 1
+          fi
+          echo "DTB seleccionado: $DTB"
+          cp "$DTB" anykernel3/dtb
+          ls -lh anykernel3/dtb
+
       - name: Create build-info.txt
         run: |
           cat > anykernel3/build-info.txt <<EOF
@@ -625,6 +730,20 @@ jobs:
             - fq qdisc (activo, compilado nativamente en este árbol)
             - TCP BBR: ${BBR_STATUS:-unavailable} (ver log del step "Port TCP BBR from donor"; si es "unavailable" el kernel usa cubic+fq igual)
             - KSM (Kernel Samepage Merging, se activa por script)
+          GAMING TUNING (device tree, requiere el fix de DTB - ver mas abajo):
+            - GPU: las 3 filas superiores de gpu_dvfs_table (1300/1200/1100 MHz)
+              alineadas al mismo umbral max_threshold=95 que ya usa el resto de
+              la tabla (antes 100, practicamente inalcanzable en gaming real).
+              gpu_max_clock, gpu_max_clock_limit y gpu_temp_throttling SIN TOCAR.
+            - Tactil: techo de boost del input_booster nativo (TOUCH/MULTITOUCH)
+              subido de 1144000/936000 al maximo real confirmado de la BIG
+              (2184000, mismo valor usado para descartar el overclock). Resto
+              de nodos (KEY/TOUCHKEY/KEYBOARD) y todas las duraciones intactos.
+          FIX DE EMPAQUETADO: anykernel.sh no maneja dtb de forma explicita -
+          sin copiar un archivo "dtb" a la raiz del ZIP, AnyKernel3 conserva el
+          DTB viejo del boot.img actual y el GAMING TUNING de arriba (que vive
+          en el device tree) nunca llegaria a aplicarse. Se agrego el step
+          "Copy compiled DTB to AnyKernel3" para corregir esto.
           NOTA: build de TESTING. read_ahead_kb, dirty_ratio/dirty_background_ratio,
           fq/BBR y KSM se activan en runtime desde 99-kernel-tweaks.sh (fuera de este workflow).
           SELinux: Enforcing (sin cambios)
