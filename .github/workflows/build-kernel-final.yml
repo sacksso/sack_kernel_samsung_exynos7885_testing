@@ -538,8 +538,20 @@ jobs:
           [ "$(grep -c '1300000 98   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1300000 no matcheo"; diff "$F.orig" "$F"; exit 1; }
           [ "$(grep -c '1200000 90   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1200000 no matcheo"; diff "$F.orig" "$F"; exit 1; }
           [ "$(grep -c '1100000 90   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1100000 no matcheo"; diff "$F.orig" "$F"; exit 1; }
-          grep -q "gpu_max_clock = <1300000>;" "$F" || { echo "ERROR: gpu_max_clock cambio, no debia tocarse"; exit 1; }
-          grep -q "gpu_temp_throttling = <845000 676000 450000 343000 343000 343000>;" "$F" || { echo "ERROR: tabla termica cambio, no debia tocarse"; exit 1; }
+          grep -q "gpu_max_clock = <1300000>;" "$F" || {
+            echo "ERROR: gpu_max_clock no coincide con el formato esperado."
+            echo "Linea real en el archivo (para ajustar el patron):"
+            grep -n "gpu_max_clock" "$F"
+            diff "$F.orig" "$F"
+            exit 1
+          }
+          grep -q "gpu_temp_throttling = <845000 676000 450000 343000 343000 343000>;" "$F" || {
+            echo "ERROR: gpu_temp_throttling no coincide con el formato esperado."
+            echo "Linea real en el archivo (para ajustar el patron):"
+            grep -n "gpu_temp_throttling" "$F"
+            diff "$F.orig" "$F"
+            exit 1
+          }
           echo "--- Diff completo aplicado ---"
           diff "$F.orig" "$F" || true
           rm "$F.orig"
