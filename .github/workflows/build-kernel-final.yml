@@ -507,12 +507,27 @@ jobs:
       - name: Tune GPU DVFS thresholds for gaming (top 3 steps)
         working-directory: kernel
         run: |
-          F=$(grep -rl "gpu_dvfs_table_size" arch/arm64/boot/dts 2>/dev/null | head -1)
-          if [ -z "$F" ]; then
-            echo "ERROR: no se encontro el archivo con gpu_dvfs_table_size en el arbol de dts"
+          echo "--- Todos los archivos con gpu_dvfs_table_size (todas las variantes SoC) ---"
+          grep -rl "gpu_dvfs_table_size" arch/arm64/boot/dts 2>/dev/null
+
+          # El arbol trae dtsi de varias variantes de SoC conviviendo
+          # (7884, 7885, etc). Filtramos explicitamente por 7885, que es
+          # el SoC real de este dispositivo (a7y18lte), para no repetir el
+          # mismo error de "asumir por head -1" que ya paso antes con
+          # Zinitix/Imagis y TMIX/Bifrost. Si no hay EXACTAMENTE un
+          # candidato con 7885 en la ruta, falla en vez de adivinar.
+          CANDIDATES=$(grep -rl "gpu_dvfs_table_size" arch/arm64/boot/dts 2>/dev/null | grep "7885")
+          COUNT=$(echo "$CANDIDATES" | grep -c . || true)
+
+          if [ -z "$CANDIDATES" ] || [ "$COUNT" != "1" ]; then
+            echo "ERROR: no se encontro exactamente 1 archivo con gpu_dvfs_table_size y '7885' en la ruta."
+            echo "Candidatos con 7885 en la ruta ($COUNT encontrados):"
+            echo "$CANDIDATES"
             exit 1
           fi
-          echo "Archivo encontrado: $F"
+
+          F="$CANDIDATES"
+          echo "Archivo encontrado (filtrado a exynos7885): $F"
           cp "$F" "$F.orig"
 
           perl -0777 -pi -e 's/1300000 98  100  1/1300000 98   95  1/' "$F"
