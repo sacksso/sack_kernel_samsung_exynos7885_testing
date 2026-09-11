@@ -715,16 +715,18 @@ jobs:
         run: |
           echo "--- .dtb generados por este build ---"
           find kernel/out/arch/arm64/boot/dts -name "*.dtb" 2>/dev/null
-          CANDIDATES=$(find kernel/out/arch/arm64/boot/dts -iname "*a7y18lte*.dtb" -o -iname "*a750*.dtb" 2>/dev/null)
-          COUNT=$(echo "$CANDIDATES" | grep -c . || true)
+          # Confirmado en dispositivo real: la revisión de placa correcta es
+          # "eur_open_03" (de las 3 generadas: _00/_01/_03). Se fija
+          # explícitamente en vez de exigir un match único ambiguo por nombre
+          # de dispositivo genérico.
+          DTB=$(find kernel/out/arch/arm64/boot/dts -iname "*a7y18lte_eur_open_03.dtb" 2>/dev/null)
+          COUNT=$(echo "$DTB" | grep -c . || true)
           if [ "$COUNT" != "1" ]; then
-            echo "AVISO: no se identificó un .dtb inequívoco por nombre de dispositivo ($COUNT encontrados)."
-            echo "Candidatos por nombre de SoC (exynos7885), puede haber varias revisiones de placa:"
+            echo "ERROR: no se encontró exactamente un .dtb *_eur_open_03.dtb ($COUNT encontrados)."
+            echo "Candidatos por nombre de SoC (exynos7885), por si el nombre cambió:"
             find kernel/out/arch/arm64/boot/dts -iname "*7885*.dtb" 2>/dev/null
-            echo "ERROR: confirmar manualmente cuál .dtb corresponde a tu revisión de placa antes de continuar"
             exit 1
           fi
-          DTB="$CANDIDATES"
           echo "DTB seleccionado: $DTB"
           cp "$DTB" anykernel3/dtb
           ls -lh anykernel3/dtb
