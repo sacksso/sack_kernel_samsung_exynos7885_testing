@@ -725,13 +725,28 @@ jobs:
           find kernel/out/arch/arm64/boot/dts -name "*.dtb" 2>/dev/null
           CANDIDATES=$(find kernel/out/arch/arm64/boot/dts -iname "*a7y18lte*.dtb" -o -iname "*a750*.dtb" 2>/dev/null)
           COUNT=$(echo "$CANDIDATES" | grep -c . || true)
-          if [ "$COUNT" -eq 1 ]; then
+
+          # ro.boot.hardware.revision del equipo real = 6. Hay 3 candidatos
+          # de placa (_00/_01/_03) y no una unica revision fisica reportada
+          # por el bootloader a la que hacer match directo. Se elige _03
+          # (el umbral de revision mas alto de los tres) por ser la
+          # convencion tipica de Samsung: "revision de placa embebida mas
+          # alta que no supera la revision real" -> con hw=6, cae en _03.
+          # NO VERIFICADO contra el dtb actual del equipo (se decidio asumir
+          # el riesgo, con backup de TWRP hecho de antemano - Regla 6).
+          # Si no bootea: restaurar backup y probar con _01 o _00.
+          PINNED="kernel/out/arch/arm64/boot/dts/exynos/exynos7885-a7y18lte_eur_open_03.dtb"
+
+          if [ -f "$PINNED" ]; then
+            DTB="$PINNED"
+            echo "AVISO: seleccion fijada manualmente a _03 (revision de placa asumida, no confirmada). Ver comentario en el workflow."
+          elif [ "$COUNT" -eq 1 ]; then
             DTB="$CANDIDATES"
           else
             echo "AVISO: no se identifico un .dtb inequivoco por nombre de dispositivo (encontrados: $COUNT)."
             echo "Candidatos por nombre de SoC (exynos7885), puede haber mas de uno para distintas placas:"
             find kernel/out/arch/arm64/boot/dts -iname "*7885*.dtb" 2>/dev/null
-            echo "ERROR: confirmar manualmente cual .dtb corresponde a a7y18lte antes de continuar - no se adivina"
+            echo "ERROR: el archivo fijado ($PINNED) no existe y no hay un candidato inequivoco - confirmar manualmente"
             exit 1
           fi
           echo "DTB seleccionado: $DTB"
