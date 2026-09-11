@@ -59,6 +59,84 @@ jobs:
           grep -rln "trip_point\|step_wise\|set_trip_temp" kernel/drivers/thermal 2>/dev/null || echo "(sin coincidencias en drivers/thermal)"
           echo "--- donante ---"
           find donor/drivers/thermal -maxdepth 2 -type f 2>/dev/null || echo "(sin drivers/thermal en donante)"
+
+          echo
+          echo "===== INPUT BOOSTER: quién lo usa (call sites) ====="
+          echo "--- kernel propio ---"
+          grep -rl "input_booster.h\|struct input_booster\|ib_send_event\|input_booster_send_event" kernel/drivers/input 2>/dev/null || echo "(ningún driver de input lo incluye)"
+
+          echo
+          echo "--- Kconfig symbol INPUT_BOOSTER o SEC_INPUT_BOOSTER en cualquier parte ---"
+          grep -rn "config INPUT_BOOSTER\|config SEC_INPUT_BOOSTER\|SEC_INPUT_BOOSTER" kernel donor 2>/dev/null || echo "(ningún símbolo relacionado existe en ningún árbol)"
+
+          echo
+          echo "===== CONTENIDO COMPLETO de kernel/include/linux/input/input_booster.h ====="
+          cat kernel/include/linux/input/input_booster.h 2>/dev/null || echo "(el archivo no existe en esta rama/checkout)"
+          echo
+          echo "===== THERMAL: origen real de los trip points ====="
+          echo "--- exynos_tmu.c: valores hardcodeados ---"
+          grep -n "trip_temp\|THRESHOLD\|_TEMP \|TMU_DEF\|#define.*TEMP" kernel/drivers/thermal/samsung/exynos_tmu.c 2>/dev/null | head -30
+          echo "--- ¿hay exynos_tmu_data.c? ---"
+          find kernel/drivers/thermal/samsung -type f
+          echo "--- trips/cooling-maps en device tree (exynos7885) ---"
+          grep -rl "trips\|cooling-maps\|polling-delay" kernel/arch/arm64/boot/dts/exynos 2>/dev/null | grep -i "7885\|a7y18" || \
+            grep -rl "trips\|cooling-maps\|polling-delay" kernel/arch/arm64/boot/dts/exynos 2>/dev/null | head -5
+          echo "--- CONFIG_THERMAL en defconfig ---"
+          grep -n "CONFIG_THERMAL\|CONFIG_EXYNOS_THERMAL" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null
+
+          echo
+          echo "===== SCHEDULER: sched_migration_cost_ns / sched_wakeup_granularity_ns ====="
+          echo "--- ¿CONFIG_SCHED_DEBUG habilitado? (sin esto los sysctl no existen en runtime) ---"
+          grep -n "CONFIG_SCHED_DEBUG" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null || echo "(símbolo no encontrado en defconfig)"
+          echo "--- valores default en el fuente ---"
+          grep -rn "sysctl_sched_migration_cost\s*=\|sysctl_sched_wakeup_granularity\s*=" kernel/kernel/sched/*.c 2>/dev/null
+
+          echo
+          echo "===== MEMORIA: watermark_scale_factor y THP ====="
+          echo "--- ¿existe watermark_scale_factor en este árbol? (llegó a mainline en 4.6, este kernel es 4.4) ---"
+          grep -rln "watermark_scale_factor" kernel/mm kernel/kernel/sysctl.c 2>/dev/null || echo "(no existe - confirmado: feature de kernel 4.6+, no portado a este árbol 4.4)"
+          echo "--- CONFIG_TRANSPARENT_HUGEPAGE en defconfig ---"
+          grep -n "CONFIG_TRANSPARENT_HUGEPAGE" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null
+          echo "--- modo default de THP en el fuente ---"
+          grep -n "TRANSPARENT_HUGEPAGE_.*_ALWAYS\|transparent_hugepage_flags" kernel/mm/huge_memory.c 2>/dev/null | head -10
+
+          echo
+          echo
+          echo "===== FREQVAR_BOOST: ¿mecanismo de boost ya presente sin usar? ====="
+          echo "--- (ya sabíamos que kernel/sched/tune.h referencia freqvar_boost_data, ver fix 3.5) ---"
+          find kernel -iname "*freqvar_boost*" 2>/dev/null
+          grep -rn "config.*FREQVAR_BOOST\|FREQVAR_BOOST" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig kernel/drivers/cpufreq/Kconfig kernel/kernel/sched/Kconfig 2>/dev/null || echo "(símbolo no encontrado en Kconfigs revisados)"
+
+          echo
+          echo
+          echo "===== LMK: driver y minfree default (causa probable de apps recargando desde cero) ====="
+          echo "--- ¿ANDROID_LOW_MEMORY_KILLER en defconfig? ---"
+          grep -n "CONFIG_ANDROID_LOW_MEMORY_KILLER\|CONFIG_MEMCG\|CONFIG_MEMCG_SWAP" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null
+          echo "--- ubicación del driver LMK en el árbol ---"
+          find kernel/drivers -iname "*lowmemorykiller*" -o -iname "*lmk*" 2>/dev/null
+          echo "--- minfree/adj default hardcodeado en el driver, si existe ---"
+          grep -rn "lowmem_minfree\[\]\|lowmem_adj\[\]\|lowmem_minfree_size\|def_minfree\|LMK_.*_ADJ" kernel/drivers 2>/dev/null | head -20
+
+          echo
+          echo "===== BFQ: low_latency (prioridad rápida a foreground al lanzar apps) ====="
+          grep -n "low_latency" kernel/block/bfq-iosched.c 2>/dev/null | head -10
+
+          echo
+          echo "===== GPU: reconciliar gpu_max_clock (DTS) vs techo ASV confirmado (1196000) ====="
+          echo "--- archivos DTS con gpu_max_clock, filtrados a 7885 explícito (no 7884) ---"
+          grep -rl "gpu_max_clock" kernel/arch/arm64/boot/dts 2>/dev/null | grep "7885" || echo "(sin candidatos filtrados a 7885)"
+          echo "--- candidatos SIN filtrar, por si hay ambigüedad 7884 vs 7885 ---"
+          grep -rl "gpu_max_clock" kernel/arch/arm64/boot/dts 2>/dev/null
+          echo "--- valor real de gpu_max_clock en cada candidato ---"
+          grep -rn "gpu_max_clock" kernel/arch/arm64/boot/dts 2>/dev/null
+
+          echo "===== GPU: gobernador DVFS del Mali (umbral de carga) ====="
+          find kernel/drivers/gpu/arm -iname "*platform*" -o -iname "*dvfs*" 2>/dev/null | head -20
+          grep -rln "upthreshold\|downthreshold\|utilisation\|simple_ondemand" kernel/drivers/gpu/arm 2>/dev/null | head -10
+          echo "--- contenido real: umbrales/carga en gpu_dvfs_governor.c ---"
+          grep -n "threshold\|utilization\|load\s*[<>]\|#define.*UP\|#define.*DOWN" kernel/drivers/gpu/arm/tMIx/r10p0/platform/exynos/gpu_dvfs_governor.c 2>/dev/null | head -40
+          echo "--- ¿otras versiones de driver además de r10p0/r3p0? ---"
+          find kernel/drivers/gpu/arm -maxdepth 2 -type d 2>/dev/null
         continue-on-error: true
 
       # ============================================================
@@ -188,6 +266,89 @@ jobs:
           grep -q "^#define arch_scale_freq_invariant" "$FILE" || { echo "ERROR: no se añadió arch_scale_freq_invariant"; exit 1; }
 
       # ============================================================
+      # 7a1. FREQVAR_SCHEDTUNE: cpufreq_schedutil.c ya llama a
+      #      schedtune_freqvar_boost_init/exit() SIN ifdef (confirmado por
+      #      hallazgo cruzado con otra sesión de trabajo sobre el mismo
+      #      árbol) - sin este symbol, esas funciones son stubs vacíos.
+      #      Habilita el mecanismo de boost de CPU nativo de Samsung
+      #      integrado en schedutil (alternativa/complemento al input booster).
+      # ============================================================
+
+      - name: Enable FREQVAR_SCHEDTUNE (native Samsung CPU boost in schedutil)
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_FREQVAR_SCHEDTUNE is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_FREQVAR_SCHEDTUNE is not set/CONFIG_FREQVAR_SCHEDTUNE=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_FREQVAR_SCHEDTUNE=y" "$DEFCONFIG" || echo "CONFIG_FREQVAR_SCHEDTUNE=y" >> "$DEFCONFIG"
+          fi
+          grep -n "CONFIG_FREQVAR_SCHEDTUNE" "$DEFCONFIG" || echo "AVISO: símbolo no encontrado tras el intento - puede no existir en este árbol, revisar log de compilación"
+
+      # ============================================================
+      # 7a2. Thermal: trip points escribibles en runtime (confirmado que
+      #      vienen del device tree, symbol estándar de Linux, bajo riesgo)
+      # ============================================================
+
+      - name: Enable writable thermal trip points
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_THERMAL_WRITABLE_TRIPS is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_THERMAL_WRITABLE_TRIPS is not set/CONFIG_THERMAL_WRITABLE_TRIPS=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_THERMAL_WRITABLE_TRIPS=y" "$DEFCONFIG" || echo "CONFIG_THERMAL_WRITABLE_TRIPS=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_THERMAL_WRITABLE_TRIPS=y" "$DEFCONFIG" || { echo "ERROR: THERMAL_WRITABLE_TRIPS no activado"; exit 1; }
+          grep -n "CONFIG_THERMAL_WRITABLE_TRIPS" "$DEFCONFIG"
+
+      # ============================================================
+      # 7a3. Transparent Huge Pages: activar (estaba completamente
+      #      deshabilitado, symbol estándar de Linux, bajo riesgo)
+      # ============================================================
+
+      - name: Enable Transparent Huge Pages
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_TRANSPARENT_HUGEPAGE is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_TRANSPARENT_HUGEPAGE is not set/CONFIG_TRANSPARENT_HUGEPAGE=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_TRANSPARENT_HUGEPAGE=y" "$DEFCONFIG" || echo "CONFIG_TRANSPARENT_HUGEPAGE=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_TRANSPARENT_HUGEPAGE=y" "$DEFCONFIG" || { echo "ERROR: THP no activado"; exit 1; }
+          # mm/Kconfig tiene una choice separada de default sysfs para THP.
+          # Sin fijarla, queda en "always" (mayor consumo de RAM sin garantía
+          # de beneficio) en vez de "madvise" (más seguro, solo apps que lo
+          # piden explícitamente lo usan) - hallazgo cruzado con otra sesión.
+          sed -i '/^CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS/d' "$DEFCONFIG"
+          echo "CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y" >> "$DEFCONFIG"
+          grep -n "CONFIG_TRANSPARENT_HUGEPAGE" "$DEFCONFIG"
+
+      # ============================================================
+      # 7a4. FIX CRÍTICO: bug real en fs/proc/task_mmu.c, nunca antes
+      #      compilado con THP siempre desactivado (hallazgo cruzado con
+      #      otra sesión, confirmado con error real de GCC). reclaim_pte_range()
+      #      (feature propia de Samsung) llama split_huge_page_pmd(vma, pmd, addr)
+      #      pero la macro espera (vma, address, pmd) - argumentos invertidos.
+      #      Sin este fix, el build FALLA ahora que activamos THP arriba:
+      #      "fs/proc/task_mmu.c:1570:27: error: passing argument 2 of
+      #       '__split_huge_page_pmd' makes integer from pointer without a cast"
+      # ============================================================
+
+      - name: Fix swapped arguments in reclaim_pte_range (task_mmu.c)
+        working-directory: kernel
+        run: |
+          FILE=fs/proc/task_mmu.c
+          if ! grep -q "split_huge_page_pmd(vma, pmd, addr);" "$FILE"; then
+            echo "ERROR: no se encontró la línea esperada en $FILE (¿cambió el código fuente?)"
+            grep -n "split_huge_page_pmd" "$FILE"
+            exit 1
+          fi
+          sed -i 's/split_huge_page_pmd(vma, pmd, addr);/split_huge_page_pmd(vma, addr, pmd);/' "$FILE"
+          grep -n "split_huge_page_pmd(vma, addr, pmd);" "$FILE" || { echo "ERROR: no se aplicó el fix"; exit 1; }
+
+      # ============================================================
       # 7b. fq qdisc (símbolo ya existente en este árbol 4.4, confirmado
       #     por build anterior - CONFIG_NET_SCH_FQ=y en línea 998)
       # ============================================================
@@ -275,6 +436,77 @@ jobs:
           grep -q "CONFIG_CRYPTO_ZSTD=y" "$DEFCONFIG" || { echo "ERROR: ZSTD no activado"; exit 1; }
 
       # ============================================================
+      # GAMING TUNING 1/2: umbrales de gpu_dvfs_table (device tree).
+      # Las 3 filas superiores (1300/1200/1100 MHz) tenían max_threshold=100
+      # (prácticamente inalcanzable en gaming real) mientras el resto de la
+      # tabla usa 95 - se alinean. gpu_max_clock (1100000, confirmado real,
+      # NO 1300000) y gpu_temp_throttling quedan intactos - cero overclock,
+      # solo se corrige un umbral inconsistente en filas ya existentes.
+      # ============================================================
+
+      - name: Tune GPU DVFS thresholds for gaming (top 3 steps)
+        working-directory: kernel
+        run: |
+          CANDIDATES=$(grep -rl "gpu_dvfs_table_size" arch/arm64/boot/dts 2>/dev/null | grep "7885")
+          COUNT=$(echo "$CANDIDATES" | grep -c . || true)
+          if [ -z "$CANDIDATES" ] || [ "$COUNT" != "1" ]; then
+            echo "ERROR: no se encontró exactamente 1 archivo con gpu_dvfs_table_size y '7885' en la ruta."
+            echo "Candidatos con 7885 en la ruta ($COUNT encontrados):"
+            echo "$CANDIDATES"
+            exit 1
+          fi
+          F="$CANDIDATES"
+          echo "Archivo encontrado (filtrado a exynos7885): $F"
+          cp "$F" "$F.orig"
+
+          perl -0777 -pi -e 's/1300000 98  100  1/1300000 98   95  1/' "$F"
+          perl -0777 -pi -e 's/1200000 98  100  1/1200000 90   95  1/' "$F"
+          perl -0777 -pi -e 's/1100000 90  100  1/1100000 90   95  1/' "$F"
+
+          [ "$(grep -c '1300000 98   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1300000 no matcheó"; diff "$F.orig" "$F"; exit 1; }
+          [ "$(grep -c '1200000 90   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1200000 no matcheó"; diff "$F.orig" "$F"; exit 1; }
+          [ "$(grep -c '1100000 90   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1100000 no matcheó"; diff "$F.orig" "$F"; exit 1; }
+          grep -q "gpu_max_clock = <1100000>;" "$F" || {
+            echo "ERROR: gpu_max_clock no coincide con el valor confirmado (1100000)."
+            grep -n "gpu_max_clock" "$F"; diff "$F.orig" "$F"; exit 1
+          }
+          echo "--- Diff completo aplicado ---"
+          diff "$F.orig" "$F" || true
+          rm "$F.orig"
+
+      # ============================================================
+      # GAMING TUNING 2/2: techo de boost táctil (input_booster nativo de
+      # Samsung, YA ACTIVO en drivers/input/input.c a nivel genérico de
+      # input_event() - NO requiere CONFIG_INPUT_BOOSTER, que de hecho
+      # apagaría esta rama nativa si se activara). Se sube el techo de
+      # TOUCH/MULTITOUCH de 1144000/936000 al máximo real confirmado de la
+      # BIG (2184000, el mismo valor certificado que se usó para descartar
+      # el overclock). KEY/TOUCHKEY/KEYBOARD quedan intactos.
+      # ============================================================
+
+      - name: Tune native touch input-booster ceiling for gaming
+        working-directory: kernel
+        run: |
+          F=$(grep -rl 'input_booster,label = "TOUCH"' arch/arm64/boot/dts 2>/dev/null | head -1)
+          if [ -z "$F" ]; then
+            echo "ERROR: no se encontró el archivo con el nodo input_booster TOUCH"
+            exit 1
+          fi
+          echo "Archivo encontrado: $F"
+          cp "$F" "$F.orig"
+
+          perl -0777 -pi -e 's/(input_booster,label = "TOUCH";.*?input_booster,cpu_freqs = <)1144000 1144000 936000(>;)/${1}2184000 2184000 2184000${2}/s' "$F"
+          perl -0777 -pi -e 's/(input_booster,label = "MULTITOUCH";.*?input_booster,cpu_freqs = <)1144000 936000(>;)/${1}2184000 2184000${2}/s' "$F"
+
+          grep -A12 'label = "TOUCH"' "$F" | grep -q "cpu_freqs = <2184000 2184000 2184000>;" || { echo "ERROR: TOUCH no se actualizó"; diff "$F.orig" "$F"; exit 1; }
+          grep -A12 'label = "MULTITOUCH"' "$F" | grep -q "cpu_freqs = <2184000 2184000>;" || { echo "ERROR: MULTITOUCH no se actualizó"; diff "$F.orig" "$F"; exit 1; }
+          grep -A12 'label = "KEY"' "$F" | grep -q "cpu_freqs = <1144000>;" || { echo "ERROR: KEY se tocó sin querer"; exit 1; }
+          grep -A12 'label = "TOUCHKEY"' "$F" | grep -q "cpu_freqs = <1144000>;" || { echo "ERROR: TOUCHKEY se tocó sin querer"; exit 1; }
+          echo "--- Diff completo aplicado ---"
+          diff "$F.orig" "$F" || true
+          rm "$F.orig"
+
+      # ============================================================
       # 9. BFQ (copiar y hacerlo el scheduler por defecto parcheando Kconfig)
       # ============================================================
 
@@ -356,6 +588,51 @@ jobs:
           grep -q "CONFIG_WIREGUARD=y" arch/arm64/configs/lineage_a7y18lte_defconfig || { echo "ERROR: WireGuard no activado"; exit 1; }
 
       # ============================================================
+      # WATCHDOG DE SALUD DEL TOUCH IC (Imagis IST40XX) - EXPERIMENTAL
+      # ============================================================
+      # Diagnóstico (de otra sesión de trabajo, no verificado por nosotros
+      # de forma independiente): el único mecanismo de recovery del driver
+      # original (ist40xx_request_reset) solo cuenta errores DENTRO del
+      # handler de interrupciones - si el IC deja de generar interrupciones
+      # por completo (silencio total, no errores), ese contador nunca sube
+      # y nunca se dispara un reset. Esto agrega un chequeo activo cada ~5s
+      # que fuerza un reset si el IC deja de responder por I2C.
+      # AVISO: código nuevo, no un port - solo probado por compilación
+      # aislada en la otra sesión, NUNCA validado en hardware real todavía.
+      # Colocado ANTES de "Compile kernel" (a diferencia del workflow
+      # original donde quedó después de "Verify kernel output" - ahí el
+      # parche nunca llegaba a compilarse en el Image ya generado).
+      # ============================================================
+
+      - name: Add touch IC health-check watchdog (Imagis IST40XX)
+        working-directory: kernel
+        run: |
+          F=drivers/input/touchscreen/imagis_40xx/ist40xx.c
+          H=drivers/input/touchscreen/imagis_40xx/ist40xx.h
+
+          if [ ! -f "$F" ] || [ ! -f "$H" ]; then
+            echo "ERROR: no se encontró ist40xx.c/.h en la ruta esperada - confirmar ruta real antes de continuar"
+            find kernel/drivers/input/touchscreen -iname "ist40xx*" 2>/dev/null
+            exit 1
+          fi
+
+          perl -0777 -pi -e 's/(\tstruct delayed_work work_reset_check;\n)/$1\tstruct delayed_work work_health_check;\t\/* watchdog: IC silencioso *\/\n/' "$H"
+
+          perl -0777 -pi -e 's/(\}\n\n#ifdef IST40XX_NOISE_MODE\nstatic void noise_work_func)/}\n\nstatic void health_check_work_func(struct work_struct *work)\n{\n\tstruct delayed_work *delayed_work = to_delayed_work(work);\n\tstruct ist40xx_data *data =\n\t    container_of(delayed_work, struct ist40xx_data,\n\t\t\t work_health_check);\n\tu32 hc_val;\n\tint hc_ret;\n\n\tif (unlikely((data == NULL) || (data->client == NULL)))\n\t\treturn;\n\n\tif (unlikely(!data->initialized ||\n\t\t     data->status.sys_mode == STATE_POWER_OFF ||\n\t\t     data->status.update == 1 ||\n\t\t     data->status.calib >= 1 || data->status.miscalib >= 1))\n\t\treturn;\n\n\t\/* Lectura liviana de un registro de estado, solo para confirmar que\n\t * el IC sigue respondiendo por I2C. *\/\n\tmutex_lock(&data->lock);\n\thc_ret = ist40xx_read_reg(data->client, IST40XX_HIB_TOUCH_STATUS, &hc_val);\n\tmutex_unlock(&data->lock);\n\n\tif (unlikely(hc_ret)) {\n\t\tinput_info(true, &data->client->dev,\n\t\t\t   "%s: IC no responde al health-check, forzando reset\\n",\n\t\t\t   __func__);\n\t\tist40xx_scheduled_reset(data);\n\t}\n}\n\n#ifdef IST40XX_NOISE_MODE\nstatic void noise_work_func/' "$F"
+
+          perl -0pi -e 's/(\tINIT_DELAYED_WORK\(&data->work_reset_check, reset_work_func\);\n)/$1\tINIT_DELAYED_WORK(&data->work_health_check, health_check_work_func);\n/' "$F"
+
+          perl -0pi -e 's/(\tcancel_delayed_work_sync\(&data->work_reset_check\);\n)/$1\tcancel_delayed_work_sync(&data->work_health_check);\n/g' "$F"
+
+          perl -0777 -pi -e 's/(if \(data->irq_working \|\| !data->initialized \|\| data->rec_mode\)\n\t\tgoto restart_timer;\n\n)(\tif \(status->event_mode\) \{\n\t\tif \(likely)/$1\tif (likely(status->event_mode) \&\& status->sys_mode != STATE_POWER_OFF) {\n\t\tstatic int hc_tick;\n\t\tif (++hc_tick >= 10) {\t\/* cada ~5s (timer corre cada 500ms) *\/\n\t\t\thc_tick = 0;\n\t\t\tschedule_delayed_work(&data->work_health_check, 0);\n\t\t}\n\t}\n\n$2/' "$F"
+
+          echo "--- Verificación: cada inserción debe dar exactamente el conteo esperado ---"
+          [ "$(grep -c 'work_health_check' "$H")" = "1" ] || { echo "ERROR: campo del struct no se insertó (o se duplicó)"; exit 1; }
+          [ "$(grep -c 'work_health_check' "$F")" = "5" ] || { echo "ERROR: conteo inesperado en ist40xx.c"; exit 1; }
+          [ "$(grep -c 'health_check_work_func' "$F")" = "2" ] || { echo "ERROR: función no se insertó (o se duplicó)"; exit 1; }
+          echo "OK: las 5 inserciones aplicaron exactamente una vez cada una"
+
+      # ============================================================
       # 11. COMPILACIÓN (con verificaciones de .config)
       # ============================================================
 
@@ -382,6 +659,8 @@ jobs:
           fi
           grep -q "CONFIG_NET_SCH_FQ=y" out/.config || { echo "ERROR: fq qdisc no activo en .config"; exit 1; }
           grep -q "CONFIG_KSM=y" out/.config || { echo "ERROR: KSM no activo en .config"; exit 1; }
+          grep -q "CONFIG_THERMAL_WRITABLE_TRIPS=y" out/.config || { echo "ERROR: THERMAL_WRITABLE_TRIPS no activo en .config"; exit 1; }
+          grep -q "CONFIG_TRANSPARENT_HUGEPAGE=y" out/.config || { echo "ERROR: THP no activo en .config"; exit 1; }
           # BBR es opcional (depende de si el donante lo trae backporteado a 4.4) - no bloquea el build
           if grep -q "CONFIG_TCP_CONG_BBR=y" out/.config; then
             echo "BBR activo en .config (portado del donante)"
@@ -417,6 +696,38 @@ jobs:
         run: |
           cp kernel/out/arch/arm64/boot/Image anykernel3/Image
           ls -lh anykernel3/Image
+
+      # ============================================================
+      # FIX CRÍTICO: anykernel.sh (revisado) no define ninguna variable
+      # dtb= ni maneja el DTB de forma explícita - solo llama a
+      # dump_boot/write_boot (librería estándar de AnyKernel3). Sin un
+      # archivo llamado "dtb" en la raíz del ZIP, esa librería CONSERVA
+      # el DTB que ya está en el boot.img actual del teléfono, sin
+      # tocarlo - lo que significa que los cambios de GPU DVFS / input
+      # booster de arriba (viven en el device tree) compilarían bien pero
+      # NUNCA llegarían al equipo. Este step busca el .dtb real generado
+      # por el build (por nombre de dispositivo, para no adivinar entre
+      # varios .dtb si el árbol genera más de uno) y lo copia a la raíz
+      # del ZIP con el nombre que ak3-core.sh espera.
+      # ============================================================
+
+      - name: Copy compiled DTB to AnyKernel3 (dtb changes won't apply without this)
+        run: |
+          echo "--- .dtb generados por este build ---"
+          find kernel/out/arch/arm64/boot/dts -name "*.dtb" 2>/dev/null
+          CANDIDATES=$(find kernel/out/arch/arm64/boot/dts -iname "*a7y18lte*.dtb" -o -iname "*a750*.dtb" 2>/dev/null)
+          COUNT=$(echo "$CANDIDATES" | grep -c . || true)
+          if [ "$COUNT" != "1" ]; then
+            echo "AVISO: no se identificó un .dtb inequívoco por nombre de dispositivo ($COUNT encontrados)."
+            echo "Candidatos por nombre de SoC (exynos7885), puede haber varias revisiones de placa:"
+            find kernel/out/arch/arm64/boot/dts -iname "*7885*.dtb" 2>/dev/null
+            echo "ERROR: confirmar manualmente cuál .dtb corresponde a tu revisión de placa antes de continuar"
+            exit 1
+          fi
+          DTB="$CANDIDATES"
+          echo "DTB seleccionado: $DTB"
+          cp "$DTB" anykernel3/dtb
+          ls -lh anykernel3/dtb
 
       - name: Create build-info.txt
         run: |
