@@ -508,18 +508,20 @@ jobs:
 
           echo
           echo "===== 6. Hook en mm/mmap.c ====="
-          # NOTA IMPORTANTE: uksm_vma_add_new(vma) y "if (next && !insert)"
-          # aparecen en MULTIPLES hunks de mmap.c que SI aplicaron
-          # (mmap_region, do_mmap_pgoff, etc.) - usarlos como firma del
-          # hunk #5 produce falsos positivos. La firma UNICA del hunk #5
-          # es "uksm_vma_add_new(next);" (con la variable 'next', local
-          # de vma_adjust). Otros hunks usan vma o tmp.
+          # NOTA: uksm_vma_add_new aparece en MULTIPLES hunks del patch
+          # (do_mmap_pgoff, mmap_region, etc.), no solo en el #5 de
+          # vma_adjust. Contar ocurrencias globales NO sirve para saber
+          # si el hunk #5 aplico - hay que chequear las inserciones
+          # ESPECIFICAS de ese hunk.
           HAS_HOOK=$(grep -c 'uksm_vma_add_new' mm/mmap.c || true)
           echo "Ocurrencias uksm_vma_add_new (cualquier hunk): $HAS_HOOK"
           if [ -f mm/mmap.c.rej ]; then
             echo "mmap.c.rej presente - el hunk #5 (vma_adjust) no aplico."
-            if grep -q 'uksm_vma_add_new(next);' mm/mmap.c; then
-              echo "AVISO: hunk #5 ya presente (fix manual aplicado en un run anterior). No se re-aplica."
+            # Chequeo especifico de las 2 inserciones del hunk #5 que SI
+            # podemos insertar (la tercera, uksm_remove_vma en remove_next==2,
+            # no matchea por diferencia estructural post-backport - deuda).
+            if grep -q 'if (next && !insert)' mm/mmap.c && grep -q 'uksm_vma_add_new(vma);' mm/mmap.c; then
+              echo "AVISO: hunk #5 ya presente (aplicado en un run anterior). No se aplica fix manual."
               rm -f mm/mmap.c.rej
             else
               echo "Aplicando fix manual del hunk #5..."
@@ -539,7 +541,7 @@ jobs:
           print("OK: hook vma_adjust insertado.")
           PYEOF
               python3 /tmp/fix_mmap.py mm/mmap.c
-              grep -q 'uksm_vma_add_new(vma);' mm/mmap.c || { echo "ERROR: fix manual fallo (rama vma)"; exit 1; }
+              grep -q 'uksm_vma_add_new(vma);' mm/mmap.c || { echo "ERROR: fix manual fallo"; exit 1; }
               grep -q 'uksm_vma_add_new(next);' mm/mmap.c || { echo "ERROR: fix manual no inserto branch next"; exit 1; }
               rm -f mm/mmap.c.rej
               echo "Fix manual aplicado, .rej limpiado."
@@ -548,15 +550,10 @@ jobs:
 
           echo
           echo "===== 7. Fix portabilidad: const en is_full_zero() ====="
-          # NOTA: NO usar '\t' en grep BRE - no se interpreta como tab.
-          # Se usa patron literal sin anclas de tab, con grep -F (fixed strings).
-          if grep -qF 'unsigned long *src = s1;' mm/uksm.c; then
-            echo "Patron encontrado, aplicando fix const..."
-            sed -i 's/unsigned long \*src = s1;/const unsigned long *src = s1;/' mm/uksm.c
-          else
-            echo "Patron 'unsigned long *src = s1;' no encontrado - ¿ya fue parcheado o cambio el fuente?"
+          if grep -q '^\tunsigned long \*src = s1;$' mm/uksm.c; then
+            sed -i 's/^\tunsigned long \*src = s1;$/\tconst unsigned long *src = s1;/' mm/uksm.c
           fi
-          grep -qF 'const unsigned long *src = s1' mm/uksm.c || { echo "ERROR: no se pudo aplicar fix const"; grep -n 'src = s1' mm/uksm.c; exit 1; }
+          grep -q 'const unsigned long \*src = s1' mm/uksm.c || { echo "ERROR: no se pudo aplicar fix const"; grep -n 'src = s1' mm/uksm.c; exit 1; }
           echo "OK"
 
           echo
@@ -583,6 +580,45 @@ jobs:
           echo "===== 10. Resumen ====="
           echo ".rej residuales: $(find . -name '*.rej' | wc -l) (deberia ser 0)"
           echo "CONFIG_UKSM en defconfig: $(grep '^CONFIG_UKSM' $DEFCONFIG)"
+
+      # ============================================================
+      # 8b2. FIX: uksm_remove_vma(next) en remove_next==2
+      # ============================================================
+      # DIAGNOSTICADO contra el mm/mmap.c real de este arbol (no el
+      # texto que asume uksm-4.4/4.9.patch): en esta version de
+      # vma_adjust(), "next" se libera con kmem_cache_free() y LUEGO
+      # se reasigna a vma->vm_next, todo ANTES de llegar al
+      # "if (remove_next == 2) goto again;". Insertar el hook ahi (como
+      # hace el patch generico) apuntaria al VMA reasignado, no al que
+      # realmente se libero - hook en el lugar equivocado.
+      # Fix real: insertar uksm_remove_vma(next) INMEDIATAMENTE ANTES
+      # de kmem_cache_free(vm_area_cachep, next), mientras "next" todavia
+      # apunta al VMA original y la memoria sigue valida.
+
+      - name: Fix uksm_remove_vma hook in remove_next==2 branch (real anchor)
+        working-directory: kernel
+        run: |
+          FILE=mm/mmap.c
+          if ! grep -q "uksm_remove_vma(next);" "$FILE"; then
+            OLD=$'\t\tmpol_put(vma_policy(next));\n\t\tkmem_cache_free(vm_area_cachep, next);'
+            NEW=$'\t\tmpol_put(vma_policy(next));\n\t\tuksm_remove_vma(next);\n\t\tkmem_cache_free(vm_area_cachep, next);'
+            python3 - "$FILE" "$OLD" "$NEW" <<'PYEOF'
+          import sys
+          path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open(path, "r") as f:
+              content = f.read()
+          count = content.count(old)
+          if count != 1:
+              print(f"ERROR: anchor encontrado {count} veces (se esperaba 1). No se modifica el archivo.")
+              sys.exit(1)
+          content = content.replace(old, new, 1)
+          with open(path, "w") as f:
+              f.write(content)
+          print("Hook de remove_next==2 insertado correctamente.")
+          PYEOF
+          fi
+          echo "--- Verificación ---"
+          grep -n "uksm_remove_vma(next);" "$FILE" || { echo "ERROR: el hook no quedó aplicado"; exit 1; }
 
       # ============================================================
       # 8c. TTL/HL spoofing (netfilter xt_HL) - ya verificado en clon de
