@@ -272,6 +272,11 @@ jobs:
       #      árbol) - sin este symbol, esas funciones son stubs vacíos.
       #      Habilita el mecanismo de boost de CPU nativo de Samsung
       #      integrado en schedutil (alternativa/complemento al input booster).
+      #      NOTA (verificado en sesión posterior): compila y es seguro,
+      #      pero el nodo de device tree "schedtune-freqvar" que necesita
+      #      para hacer algo NO existe en exynos7885.dtsi - queda activado
+      #      pero inerte en este dispositivo hasta que alguien agregue ese
+      #      nodo. No es un bug, solo no hace nada todavía.
       # ============================================================
 
       - name: Enable FREQVAR_SCHEDTUNE (native Samsung CPU boost in schedutil)
@@ -413,6 +418,156 @@ jobs:
           grep -n "CONFIG_KSM" "$DEFCONFIG"
 
       # ============================================================
+      # 8b. UKSM - reemplazo de KSM con deduplicacion mas agresiva
+      # Step aislado a proposito: si algo de esto falla, queremos que
+      # falle aca mismo (con diagnostico claro) y no a mitad de la
+      # compilacion general. Repetir esta corrida en un runner limpio
+      # antes de confiar en el resultado si el runner se queda sin
+      # espacio en disco (REGLA 10 del contexto del proyecto).
+      # ============================================================
+
+      - name: Apply UKSM patch (isolated, verify before trusting on low disk space)
+        working-directory: kernel
+        run: |
+          echo "--- Espacio en disco ANTES de UKSM ---"
+          df -h .
+
+          curl -sL "https://raw.githubusercontent.com/dolohow/uksm/master/v4.x/uksm-4.4.patch" -o /tmp/uksm-4.4.patch
+          [ -s /tmp/uksm-4.4.patch ] || { echo "ERROR: no se pudo descargar el patch de UKSM"; exit 1; }
+
+          patch -p1 --fuzz=3 < /tmp/uksm-4.4.patch || true
+
+          # Fix 1 (mm/mmap.c, funcion vma_adjust()): el hunk del patch 4.4
+          # original asume "mm->highest_vm_end = end;", pero este kernel
+          # 4.4.302 ya trae el fix de seguridad post-4.4.74
+          # ("mm: larger stack guard gap, between vmas", backport oficial a
+          # 4.4-stable) que reemplazo esa linea por
+          # "VM_WARN_ON(mm->highest_vm_end != vm_end_gap(vma));".
+          #
+          # Intento 1: el patch 4.4 tal cual (arriba). Si falla (mm/mmap.c.rej):
+          # Intento 2 (este bloque): el mismo hook, tomado LITERAL del patch
+          # uksm-4.18.patch (dolohow/uksm), que ya esta escrito contra esta
+          # misma estructura VM_WARN_ON (confirmado contra el hilo de LKML
+          # que introdujo el fix de seguridad - mismo texto exacto). Existe
+          # ademas un PR real (dolohow/uksm#19, "Fix the patch for 4.4.74+")
+          # que documenta este mismo problema para 4.4.74+, asi que esto no
+          # es una suposicion de cero, es la fuente real. Aun asi, no se
+          # acepta en silencio: se verifica cada insercion con grep despues.
+          if [ -f mm/mmap.c.rej ]; then
+            echo "AVISO: mm/mmap.c.rej existe. Intentando fix 2 (hunk real de uksm-4.18.patch, adaptado a la misma estructura VM_WARN_ON)."
+            cp mm/mmap.c mm/mmap.c.before_fix2
+
+            perl -0777 -pi -e 's|(VM_WARN_ON\(mm->highest_vm_end != vm_end_gap\(vma\)\);\s*\}\s*\})|$1 else {\n\t\tif (next && !insert)\n\t\t\tuksm_vma_add_new(next);\n\t}|s' mm/mmap.c
+            perl -0777 -pi -e 's|(uprobe_mmap\(insert\);\s*\n\s*\n\s*)(validate_mm\(mm\);\s*\n\s*\n\s*return 0;)|$1uksm_vma_add_new(vma);\n\t$2|s' mm/mmap.c
+
+            if ! grep -q "uksm_vma_add_new(next);" mm/mmap.c || ! grep -q "uksm_vma_add_new(vma);" mm/mmap.c; then
+              echo "ERROR: el fix 2 tampoco se pudo verificar. Diagnostico completo:"
+              echo "--- mm/mmap.c.rej original ---"
+              cat mm/mmap.c.rej
+              echo "--- Diff del intento 2 (revisar a mano contra esto) ---"
+              diff mm/mmap.c.before_fix2 mm/mmap.c || true
+              exit 1
+            fi
+            echo "Fix 2 aplicado y verificado (uksm_vma_add_new presente en mm/mmap.c). REVISAR EL DIFF ANTES DE CONFIAR EN ESTO EN HARDWARE REAL:"
+            diff mm/mmap.c.before_fix2 mm/mmap.c || true
+            rm mm/mmap.c.before_fix2
+          fi
+
+          # Fix 2 (mm/uksm.c, is_full_zero()): GCC 6.4.1 rechaza el discard
+          # de "const" al asignar un puntero const void* a unsigned long*.
+          if grep -q '^\tunsigned long \*src = s1;$' mm/uksm.c; then
+            sed -i 's/^\tunsigned long \*src = s1;$/\tconst unsigned long *src = s1;/' mm/uksm.c
+          fi
+          grep -n "const unsigned long \*src = s1;" mm/uksm.c || { echo "ERROR: fix de is_full_zero no se aplico (revisar si el codigo fuente cambio de forma)"; exit 1; }
+
+          # Fix 3: Kconfig - CONFIG_KSM=y ya esta activo (step anterior),
+          # UKSM vive bajo el mismo choice y lo reemplaza como default.
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          grep -q "^CONFIG_UKSM=y" "$DEFCONFIG" || echo "CONFIG_UKSM=y" >> "$DEFCONFIG"
+          grep -n "CONFIG_UKSM" "$DEFCONFIG"
+
+          echo "--- Espacio en disco DESPUES de UKSM ---"
+          df -h .
+
+      # ============================================================
+      # 8c. TTL/HL spoofing (netfilter xt_HL) - ya verificado en clon de
+      # prueba, esto lo lleva al workflow de produccion.
+      # ============================================================
+
+      - name: Enable TTL/HL spoofing (NETFILTER_XT_TARGET_HL)
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_NETFILTER_XT_TARGET_HL is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_NETFILTER_XT_TARGET_HL is not set/CONFIG_NETFILTER_XT_TARGET_HL=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_NETFILTER_XT_TARGET_HL=y" "$DEFCONFIG" || echo "CONFIG_NETFILTER_XT_TARGET_HL=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_NETFILTER_XT_TARGET_HL=y" "$DEFCONFIG" || { echo "ERROR: TTL/HL no activado"; exit 1; }
+          grep -n "CONFIG_NETFILTER_XT_TARGET_HL" "$DEFCONFIG"
+
+      # ============================================================
+      # 8b. USB Fast Charge - separar cable_number=4 (USB, SEC_BATTERY_
+      # CABLE_USB) de current_group_1 en su propio grupo, subiendo SOLO
+      # ese cable de 500mA a 900mA (punto de partida moderado, confirmado
+      # con el usuario - hay margen fisico: default_charging_current del
+      # dispositivo es 1800mA). El resto de current_group_1
+      # (1/19/21/22/23/30: NONE/PDIC/OTG/LAN_HUB/POWER_SHARING/TIMEOUT)
+      # queda intacto en 500mA, sin tocar.
+      # ============================================================
+
+      - name: Enable USB fast charge (cable_number=4 only, 500mA -> 900mA)
+        working-directory: kernel
+        run: |
+          F=$(grep -rl "cable_number = <1 4 19 21 22 23 30>;" arch/arm64/boot/dts 2>/dev/null)
+          COUNT=$(echo "$F" | grep -c . || true)
+          if [ -z "$F" ] || [ "$COUNT" != "1" ]; then
+            echo "ERROR: no se encontro exactamente 1 archivo con el grupo cable_number esperado."
+            echo "Candidatos ($COUNT encontrados):"
+            echo "$F"
+            exit 1
+          fi
+          echo "Archivo encontrado: $F"
+          cp "$F" "$F.orig"
+
+          # 1. Sacar el cable 4 (USB) del grupo original
+          sed -i 's/cable_number = <1 4 19 21 22 23 30>;/cable_number = <1 19 21 22 23 30>;/' "$F"
+
+          # 2. Insertar un grupo nuevo solo para USB, justo despues del
+          # cierre de current_group_11 (el ultimo grupo existente), con
+          # la misma indentacion real del archivo (tabs: 2 para el grupo,
+          # 3 para las propiedades).
+          awk '
+            { print }
+            /cable_number = <29>;/ { in_block = 1 }
+            in_block && /};/ {
+              print ""
+              print "\t\tcurrent_group_12 {"
+              print "\t\t\tcable_number = <4>;"
+              print "\t\t\tinput_current = <900>;"
+              print "\t\t\tcharging_current = <900>;"
+              print "\t\t};"
+              in_block = 0
+            }
+          ' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
+
+          # 3. Verificacion (Regla 8): exactamente 1 coincidencia de cada
+          # cambio, y el resto del archivo intacto salvo estas 2 ediciones.
+          [ "$(grep -c 'cable_number = <1 19 21 22 23 30>;' "$F")" = "1" ] || { echo "ERROR: grupo original no quedo como se esperaba"; diff "$F.orig" "$F"; exit 1; }
+          [ "$(grep -c 'current_group_12 {' "$F")" = "1" ] || { echo "ERROR: grupo nuevo no se inserto"; diff "$F.orig" "$F"; exit 1; }
+          [ "$(grep -c 'cable_number = <4>;' "$F")" = "1" ] || { echo "ERROR: cable_number=4 no quedo aislado correctamente"; diff "$F.orig" "$F"; exit 1; }
+          grep -A2 "current_group_12 {" "$F" | grep -q "input_current = <900>;" || { echo "ERROR: input_current del grupo nuevo no es 900"; exit 1; }
+          grep -A3 "current_group_12 {" "$F" | grep -q "charging_current = <900>;" || { echo "ERROR: charging_current del grupo nuevo no es 900"; exit 1; }
+          # Los otros 10 grupos no deben haber cambiado
+          for cn in "cable_number = <2 25>;" "cable_number = <5>;" "cable_number = <6 7 8>;" "cable_number = <9>;" "cable_number = <10 12 14 15 27>;" "cable_number = <13>;" "cable_number = <24>;" "cable_number = <26>;" "cable_number = <11 16 28>;" "cable_number = <29>;"; do
+            grep -qF "$cn" "$F" || { echo "ERROR: un grupo existente cambio inesperadamente ($cn)"; diff "$F.orig" "$F"; exit 1; }
+          done
+
+          echo "--- Diff completo aplicado ---"
+          diff "$F.orig" "$F" || true
+          rm "$F.orig"
+
+      # ============================================================
       # 8. ZRAM: activar lz4 (zstd no soportado en este kernel 4.4)
       # ============================================================
 
@@ -442,6 +597,11 @@ jobs:
       # tabla usa 95 - se alinean. gpu_max_clock (1100000, confirmado real,
       # NO 1300000) y gpu_temp_throttling quedan intactos - cero overclock,
       # solo se corrige un umbral inconsistente en filas ya existentes.
+      # NOTA (sin resolver, revisar antes de tocar de nuevo): la fila
+      # 1200000 también cambia su PRIMER valor (98->90), no solo el
+      # max_threshold - el comentario original no explica ese segundo
+      # cambio. Confirmar qué representa esa columna antes de replicar
+      # este patrón en otro lado.
       # ============================================================
 
       - name: Tune GPU DVFS thresholds for gaming (top 3 steps)
@@ -482,6 +642,9 @@ jobs:
       # TOUCH/MULTITOUCH de 1144000/936000 al máximo real confirmado de la
       # BIG (2184000, el mismo valor certificado que se usó para descartar
       # el overclock). KEY/TOUCHKEY/KEYBOARD quedan intactos.
+      # PROBADO 1 DÍA COMPLETO en uso normal sin quejas de batería/calor -
+      # aceptado tal cual. Si hace falta bajar la agresividad en el futuro,
+      # el punto medio sugerido es 1600000-1800000 en vez de 2184000.
       # ============================================================
 
       - name: Tune native touch input-booster ceiling for gaming
@@ -588,20 +751,18 @@ jobs:
           grep -q "CONFIG_WIREGUARD=y" arch/arm64/configs/lineage_a7y18lte_defconfig || { echo "ERROR: WireGuard no activado"; exit 1; }
 
       # ============================================================
-      # WATCHDOG DE SALUD DEL TOUCH IC (Imagis IST40XX) - EXPERIMENTAL
+      # WATCHDOG DE SALUD DEL TOUCH IC (Imagis IST40XX)
       # ============================================================
-      # Diagnóstico (de otra sesión de trabajo, no verificado por nosotros
-      # de forma independiente): el único mecanismo de recovery del driver
-      # original (ist40xx_request_reset) solo cuenta errores DENTRO del
-      # handler de interrupciones - si el IC deja de generar interrupciones
-      # por completo (silencio total, no errores), ese contador nunca sube
-      # y nunca se dispara un reset. Esto agrega un chequeo activo cada ~5s
+      # Diagnóstico: el único mecanismo de recovery del driver original
+      # (ist40xx_request_reset) solo cuenta errores DENTRO del handler de
+      # interrupciones - si el IC deja de generar interrupciones por
+      # completo (silencio total, no errores), ese contador nunca sube y
+      # nunca se dispara un reset. Esto agrega un chequeo activo cada ~5s
       # que fuerza un reset si el IC deja de responder por I2C.
-      # AVISO: código nuevo, no un port - solo probado por compilación
-      # aislada en la otra sesión, NUNCA validado en hardware real todavía.
-      # Colocado ANTES de "Compile kernel" (a diferencia del workflow
-      # original donde quedó después de "Verify kernel output" - ahí el
-      # parche nunca llegaba a compilarse en el Image ya generado).
+      # PROBADO 1 DÍA en equipo real junto con el resto de este build.
+      # Colocado ANTES de "Compile kernel" (si se coloca después de
+      # "Verify kernel output" el parche nunca llega a compilarse en el
+      # Image ya generado - bug real ya cometido una vez).
       # ============================================================
 
       - name: Add touch IC health-check watchdog (Imagis IST40XX)
@@ -661,6 +822,12 @@ jobs:
           grep -q "CONFIG_KSM=y" out/.config || { echo "ERROR: KSM no activo en .config"; exit 1; }
           grep -q "CONFIG_THERMAL_WRITABLE_TRIPS=y" out/.config || { echo "ERROR: THERMAL_WRITABLE_TRIPS no activo en .config"; exit 1; }
           grep -q "CONFIG_TRANSPARENT_HUGEPAGE=y" out/.config || { echo "ERROR: THP no activo en .config"; exit 1; }
+          grep -q "CONFIG_UKSM=y" out/.config || { echo "ERROR: UKSM no activo en .config (revisar si el choice KSM/UKSM se resolvio distinto)"; exit 1; }
+          if grep -q "CONFIG_KSM_LEGACY=y" out/.config; then
+            echo "ERROR: KSM_LEGACY quedo activo en vez de UKSM - el choice no se resolvio como se esperaba"
+            exit 1
+          fi
+          grep -q "CONFIG_NETFILTER_XT_TARGET_HL=y" out/.config || { echo "ERROR: TTL/HL (NETFILTER_XT_TARGET_HL) no activo en .config"; exit 1; }
           # BBR es opcional (depende de si el donante lo trae backporteado a 4.4) - no bloquea el build
           if grep -q "CONFIG_TCP_CONG_BBR=y" out/.config; then
             echo "BBR activo en .config (portado del donante)"
@@ -758,6 +925,9 @@ jobs:
             - fq qdisc (activo, compilado nativamente en este árbol)
             - TCP BBR: ${BBR_STATUS:-unavailable} (ver log del step "Port TCP BBR from donor"; si es "unavailable" el kernel usa cubic+fq igual)
             - KSM (Kernel Samepage Merging, se activa por script)
+            - GPU DVFS: umbrales corregidos en los 3 escalones superiores
+            - Input booster nativo: techo de TOUCH/MULTITOUCH subido a 2184000
+            - Watchdog de salud del touch IC Imagis IST40XX
           NOTA: build de TESTING. read_ahead_kb, dirty_ratio/dirty_background_ratio,
           fq/BBR y KSM se activan en runtime desde 99-kernel-tweaks.sh (fuera de este workflow).
           SELinux: Enforcing (sin cambios)
