@@ -429,65 +429,33 @@ jobs:
       - name: Apply UKSM patch (isolated, verify before trusting on low disk space)
         working-directory: kernel
         run: |
-          echo "--- Espacio en disco ANTES de UKSM ---"
-          df -h .
+          echo "DESACTIVADO 2026-09-13: los 2 intentos previos (patch 4.4 original y el"
+          echo "hook literal de uksm-4.18.patch contra VM_WARN_ON) fallaron - ninguna de"
+          echo "las 2 suposiciones sobre el texto real de mm/mmap.c en este arbol coincide."
+          echo "Ver step de diagnostico siguiente para el texto real antes de reintentar."
+          echo "skip"
 
-          curl -sL "https://raw.githubusercontent.com/dolohow/uksm/master/v4.x/uksm-4.4.patch" -o /tmp/uksm-4.4.patch
-          [ -s /tmp/uksm-4.4.patch ] || { echo "ERROR: no se pudo descargar el patch de UKSM"; exit 1; }
+      # ============================================================
+      # Diagnostico puro (no bloqueante, no adivina): texto REAL de la
+      # zona de vma_adjust() que los 2 intentos de UKSM no pudieron
+      # matchear. Sin esto, un tercer intento seria la misma apuesta que
+      # ya fallo 2 veces.
+      # ============================================================
 
-          patch -p1 --fuzz=3 < /tmp/uksm-4.4.patch || true
-
-          # Fix 1 (mm/mmap.c, funcion vma_adjust()): el hunk del patch 4.4
-          # original asume "mm->highest_vm_end = end;", pero este kernel
-          # 4.4.302 ya trae el fix de seguridad post-4.4.74
-          # ("mm: larger stack guard gap, between vmas", backport oficial a
-          # 4.4-stable) que reemplazo esa linea por
-          # "VM_WARN_ON(mm->highest_vm_end != vm_end_gap(vma));".
-          #
-          # Intento 1: el patch 4.4 tal cual (arriba). Si falla (mm/mmap.c.rej):
-          # Intento 2 (este bloque): el mismo hook, tomado LITERAL del patch
-          # uksm-4.18.patch (dolohow/uksm), que ya esta escrito contra esta
-          # misma estructura VM_WARN_ON (confirmado contra el hilo de LKML
-          # que introdujo el fix de seguridad - mismo texto exacto). Existe
-          # ademas un PR real (dolohow/uksm#19, "Fix the patch for 4.4.74+")
-          # que documenta este mismo problema para 4.4.74+, asi que esto no
-          # es una suposicion de cero, es la fuente real. Aun asi, no se
-          # acepta en silencio: se verifica cada insercion con grep despues.
-          if [ -f mm/mmap.c.rej ]; then
-            echo "AVISO: mm/mmap.c.rej existe. Intentando fix 2 (hunk real de uksm-4.18.patch, adaptado a la misma estructura VM_WARN_ON)."
-            cp mm/mmap.c mm/mmap.c.before_fix2
-
-            perl -0777 -pi -e 's|(VM_WARN_ON\(mm->highest_vm_end != vm_end_gap\(vma\)\);\s*\}\s*\})|$1 else {\n\t\tif (next && !insert)\n\t\t\tuksm_vma_add_new(next);\n\t}|s' mm/mmap.c
-            perl -0777 -pi -e 's|(uprobe_mmap\(insert\);\s*\n\s*\n\s*)(validate_mm\(mm\);\s*\n\s*\n\s*return 0;)|$1uksm_vma_add_new(vma);\n\t$2|s' mm/mmap.c
-
-            if ! grep -q "uksm_vma_add_new(next);" mm/mmap.c || ! grep -q "uksm_vma_add_new(vma);" mm/mmap.c; then
-              echo "ERROR: el fix 2 tampoco se pudo verificar. Diagnostico completo:"
-              echo "--- mm/mmap.c.rej original ---"
-              cat mm/mmap.c.rej
-              echo "--- Diff del intento 2 (revisar a mano contra esto) ---"
-              diff mm/mmap.c.before_fix2 mm/mmap.c || true
-              exit 1
-            fi
-            echo "Fix 2 aplicado y verificado (uksm_vma_add_new presente en mm/mmap.c). REVISAR EL DIFF ANTES DE CONFIAR EN ESTO EN HARDWARE REAL:"
-            diff mm/mmap.c.before_fix2 mm/mmap.c || true
-            rm mm/mmap.c.before_fix2
-          fi
-
-          # Fix 2 (mm/uksm.c, is_full_zero()): GCC 6.4.1 rechaza el discard
-          # de "const" al asignar un puntero const void* a unsigned long*.
-          if grep -q '^\tunsigned long \*src = s1;$' mm/uksm.c; then
-            sed -i 's/^\tunsigned long \*src = s1;$/\tconst unsigned long *src = s1;/' mm/uksm.c
-          fi
-          grep -n "const unsigned long \*src = s1;" mm/uksm.c || { echo "ERROR: fix de is_full_zero no se aplico (revisar si el codigo fuente cambio de forma)"; exit 1; }
-
-          # Fix 3: Kconfig - CONFIG_KSM=y ya esta activo (step anterior),
-          # UKSM vive bajo el mismo choice y lo reemplaza como default.
-          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
-          grep -q "^CONFIG_UKSM=y" "$DEFCONFIG" || echo "CONFIG_UKSM=y" >> "$DEFCONFIG"
-          grep -n "CONFIG_UKSM" "$DEFCONFIG"
-
-          echo "--- Espacio en disco DESPUES de UKSM ---"
-          df -h .
+      - name: Diagnose real content of vma_adjust() for UKSM (non-fatal)
+        working-directory: kernel
+        run: |
+          echo "===== Contexto real alrededor de 'highest_vm_end' en mm/mmap.c ====="
+          grep -n -B5 -A5 "highest_vm_end" mm/mmap.c
+          echo
+          echo "===== Contexto real alrededor de 'uprobe_mmap(insert)' en mm/mmap.c ====="
+          grep -n -B3 -A6 "uprobe_mmap(insert)" mm/mmap.c
+          echo
+          echo "===== ¿existe VM_WARN_ON en este archivo? ====="
+          grep -n "VM_WARN_ON" mm/mmap.c || echo "(no existe ninguna ocurrencia)"
+          echo
+          echo "===== version exacta de este kernel (para descartar backport por fecha) ====="
+          grep -n "^VERSION\|^PATCHLEVEL\|^SUBLEVEL" Makefile | head -3
 
       # ============================================================
       # 8c. TTL/HL spoofing (netfilter xt_HL) - ya verificado en clon de
@@ -822,11 +790,7 @@ jobs:
           grep -q "CONFIG_KSM=y" out/.config || { echo "ERROR: KSM no activo en .config"; exit 1; }
           grep -q "CONFIG_THERMAL_WRITABLE_TRIPS=y" out/.config || { echo "ERROR: THERMAL_WRITABLE_TRIPS no activo en .config"; exit 1; }
           grep -q "CONFIG_TRANSPARENT_HUGEPAGE=y" out/.config || { echo "ERROR: THP no activo en .config"; exit 1; }
-          grep -q "CONFIG_UKSM=y" out/.config || { echo "ERROR: UKSM no activo en .config (revisar si el choice KSM/UKSM se resolvio distinto)"; exit 1; }
-          if grep -q "CONFIG_KSM_LEGACY=y" out/.config; then
-            echo "ERROR: KSM_LEGACY quedo activo en vez de UKSM - el choice no se resolvio como se esperaba"
-            exit 1
-          fi
+          # UKSM desactivado temporalmente (ver step "Apply UKSM patch") - sin verificacion aqui
           grep -q "CONFIG_NETFILTER_XT_TARGET_HL=y" out/.config || { echo "ERROR: TTL/HL (NETFILTER_XT_TARGET_HL) no activo en .config"; exit 1; }
           # BBR es opcional (depende de si el donante lo trae backporteado a 4.4) - no bloquea el build
           if grep -q "CONFIG_TCP_CONG_BBR=y" out/.config; then
