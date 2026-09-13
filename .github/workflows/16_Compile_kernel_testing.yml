@@ -487,12 +487,14 @@ jobs:
       - name: Enable USB fast charge (cable_number=4 only, 500mA -> 900mA)
         working-directory: kernel
         run: |
-          F=$(grep -rl "cable_number = <1 4 19 21 22 23 30>;" arch/arm64/boot/dts 2>/dev/null)
+          F=$(grep -rl "cable_number = <1 4 19 21 22 23 30>;" arch/arm64/boot/dts 2>/dev/null | grep "a7y18lte")
           COUNT=$(echo "$F" | grep -c . || true)
           if [ -z "$F" ] || [ "$COUNT" != "1" ]; then
-            echo "ERROR: no se encontro exactamente 1 archivo con el grupo cable_number esperado."
-            echo "Candidatos ($COUNT encontrados):"
+            echo "ERROR: no se encontro exactamente 1 archivo con el grupo cable_number esperado, filtrado a a7y18lte."
+            echo "Candidatos filtrados ($COUNT encontrados):"
             echo "$F"
+            echo "Candidatos SIN filtrar (por si el nombre de archivo cambio):"
+            grep -rl "cable_number = <1 4 19 21 22 23 30>;" arch/arm64/boot/dts 2>/dev/null
             exit 1
           fi
           echo "Archivo encontrado: $F"
