@@ -550,11 +550,36 @@ jobs:
 
           echo
           echo "===== 7. Fix portabilidad: const en is_full_zero() ====="
-          if grep -q '^\tunsigned long \*src = s1;$' mm/uksm.c; then
-            sed -i 's/^\tunsigned long \*src = s1;$/\tconst unsigned long *src = s1;/' mm/uksm.c
-          fi
-          grep -q 'const unsigned long \*src = s1' mm/uksm.c || { echo "ERROR: no se pudo aplicar fix const"; grep -n 'src = s1' mm/uksm.c; exit 1; }
-          echo "OK"
+          python3 - mm/uksm.c <<'PYEOF'
+          import re, sys
+          path = sys.argv[1]
+          with open(path, "r") as f:
+              content = f.read()
+
+          # Tolerante a whitespace exacto (espacios vs tab, offsets de
+          # indentacion) - lo unico que importa es la declaracion en si.
+          pattern = re.compile(r'^([ \t]*)unsigned long \*src = s1;$', re.MULTILINE)
+          matches = list(pattern.finditer(content))
+
+          if not matches:
+              # Ya podria estar arreglado de una corrida previa, o el
+              # patron cambio. Diagnostico completo antes de fallar.
+              already = 'const unsigned long *src = s1;' in content
+              if already:
+                  print("OK: ya tenia el fix const aplicado (idempotente).")
+                  sys.exit(0)
+              print("ERROR: no se encontro la linea esperada (ni con ni sin const).")
+              print("--- Contexto real alrededor de 'src = s1' (bytes exactos) ---")
+              for i, line in enumerate(content.splitlines(), 1):
+                  if 'src = s1' in line:
+                      print(f"{i}: {line!r}")
+              sys.exit(1)
+
+          new_content, n = pattern.subn(r'\1const unsigned long *src = s1;', content)
+          with open(path, "w") as f:
+              f.write(new_content)
+          print(f"OK: fix const aplicado ({n} ocurrencia(s)).")
+          PYEOF
 
           echo
           echo "===== 8. Asegurar #include <linux/uksm.h> en mm/mmap.c ====="
