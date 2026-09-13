@@ -418,63 +418,9 @@ jobs:
           grep -n "CONFIG_KSM" "$DEFCONFIG"
 
       # ============================================================
-      # 8b. UKSM - reemplazo de KSM con deduplicacion mas agresiva
-      # Step aislado a proposito: si algo de esto falla, queremos que
-      # falle aca mismo (con diagnostico claro) y no a mitad de la
-      # compilacion general. Repetir esta corrida en un runner limpio
-      # antes de confiar en el resultado si el runner se queda sin
-      # espacio en disco (REGLA 10 del contexto del proyecto).
-      # ============================================================
-
-      - name: Apply UKSM patch (isolated, verify before trusting on low disk space)
-        working-directory: kernel
-        run: |
-          echo "DESACTIVADO TEMPORALMENTE 2026-09-13 - decision consciente, no bloqueo tecnico."
-          echo "Se prioriza dejar TTL/HL y USB fast charge en produccion sin arrastrar el"
-          echo "riesgo de UKSM. Retomar cuando haya tiempo dedicado aparte (ver inventario)."
-          echo "skip"
-
-      # ============================================================
-      # INVENTARIO REAL PARA RETOMAR UKSM (no borrar este bloque)
-      # ============================================================
-      # Confirmado esta sesion: el hook de mm/mmap.c (vma_adjust) SI
-      # matchea y aplica limpio contra el texto real de este arbol
-      # (vm_end_gap(vma), post backport "larger stack guard gap").
-      # Pero compilar reveló que faltan piezas mas grandes de lo asumido:
-      #
-      #   - include/linux/uksm.h NO EXISTE en este arbol - hay que
-      #     crearlo completo (149 lineas, contenido real ya extraido de
-      #     uksm-4.9.patch en esta sesion). Sin esto, "uksm_vma_add_new"
-      #     no tiene declaracion visible (implicit-function-declaration).
-      #   - include/linux/mm_types.h necesita el campo nuevo
-      #     "uksm_vma_slot" en struct vm_area_struct (usado por
-      #     uksm_cow_page/uksm_cow_pte dentro del header de arriba).
-      #   - kernel/fork.c (dup_mmap) necesita su propio hook
-      #     uksm_vma_add_new(tmp), ademas del include del header.
-      #   - mm/mmap.c necesita el #include <linux/uksm.h> (hoy no lo
-      #     incluye en absoluto).
-      #
-      # El patch real completo (dolohow/uksm, v4.x/uksm-4.9.patch, el mas
-      # cercano probado contra este arbol 4.4.302) toca 19 archivos:
-      #   Documentation/vm/00-INDEX, Documentation/vm/uksm.txt, fs/exec.c,
-      #   fs/proc/meminfo.c, include/asm-generic/pgtable.h,
-      #   include/linux/ksm.h, include/linux/mm_types.h,
-      #   include/linux/mmzone.h, include/linux/sradix-tree.h (nuevo),
-      #   include/linux/uksm.h (nuevo), kernel/fork.c, lib/Makefile,
-      #   lib/sradix-tree.c (nuevo), mm/Kconfig, mm/Makefile, mm/memory.c,
-      #   mm/mmap.c, mm/rmap.c, mm/uksm.c (nuevo, ~5586 lineas - el
-      #   algoritmo completo), mm/vmstat.c.
-      #
-      # Ninguno de estos 19 (salvo el hook de mmap.c ya confirmado) se ha
-      # verificado contra el texto real de este arbol todavia. Retomar
-      # significa ir hunk por hunk, igual que se hizo con mmap.c, antes
-      # de asumir que alguno aplica tal cual.
-
-      # ============================================================
-      # Diagnostico puro (no bloqueante, no adivina): texto REAL de la
-      # zona de vma_adjust() que los 2 intentos de UKSM no pudieron
-      # matchear. Sin esto, un tercer intento seria la misma apuesta que
-      # ya fallo 2 veces.
+      # 8b-0. Diagnóstico previo al UKSM (no bloqueante). Corre ANTES
+      #       del apply para que si el apply falla, tengamos la foto
+      #       real del archivo sin los hooks ya insertados.
       # ============================================================
 
       - name: Diagnose real content of vma_adjust() for UKSM (non-fatal)
@@ -491,6 +437,133 @@ jobs:
           echo
           echo "===== version exacta de este kernel (para descartar backport por fecha) ====="
           grep -n "^VERSION\|^PATCHLEVEL\|^SUBLEVEL" Makefile | head -3
+
+      # ============================================================
+      # 8b. UKSM - reemplazo de KSM con deduplicacion mas agresiva
+      #
+      # Step aislado a proposito (Regla 10): si falla, queremos que
+      # falle aca con diagnostico completo y NO a mitad de "Compile".
+      #
+      # DEUDA CONOCIDA (documentada, no bloquea build):
+      #   El hunk que insertaba uksm_remove_vma(next) en la rama
+      #   remove_next==2 de vma_adjust NO se aplica porque el contexto
+      #   asumido por el patch ("end = next->vm_end;") no existe en
+      #   este arbol post-refactor. Sin ese hook, UKSM puede mantener
+      #   referencias a VMAs eliminados (leak lento). Aceptado como
+      #   deuda consciente para la primera prueba; retomar si aparecen
+      #   sintomas de leak prolongado.
+      # ============================================================
+
+      - name: Apply UKSM patch (verbose, hard-fail on unexpected state)
+        working-directory: kernel
+        run: |
+          set -u
+          PATCH_FILE=/tmp/uksm-4.4.patch
+          URL="https://raw.githubusercontent.com/dolohow/uksm/master/v4.x/uksm-4.4.patch"
+
+          echo "===== 1. Descarga del patch ====="
+          curl -sL "$URL" -o "$PATCH_FILE"
+          [ -s "$PATCH_FILE" ] || { echo "ERROR: descarga vacia o fallida"; exit 1; }
+          echo "Lineas: $(wc -l < $PATCH_FILE)"
+          echo "Archivos que toca: $(grep -c '^diff --git' $PATCH_FILE)"
+
+          echo
+          echo "===== 2. Dry-run (informativo, no aplica) ====="
+          patch -p1 --dry-run --fuzz=3 < "$PATCH_FILE" 2>&1 | tee /tmp/uksm-dryrun.log || true
+          echo "patching file: $(grep -c '^patching file' /tmp/uksm-dryrun.log || true)"
+          echo "FAILED:        $(grep -c 'FAILED' /tmp/uksm-dryrun.log || true)"
+          echo "--- Archivos con FAILED ---"
+          grep 'FAILED' /tmp/uksm-dryrun.log | sed 's/:.*//' | sort -u || echo "(ninguno)"
+
+          echo
+          echo "===== 3. Aplicacion real (--fuzz=3) ====="
+          patch -p1 --fuzz=3 < "$PATCH_FILE" > /tmp/uksm-patch.log 2>&1 || true
+          cat /tmp/uksm-patch.log
+
+          echo
+          echo "===== 4. .rej generados ====="
+          find . -name '*.rej' -type f > /tmp/rej-list.txt
+          cat /tmp/rej-list.txt
+          UNEXPECTED=$(grep -v '^./mm/mmap.c.rej$' /tmp/rej-list.txt | grep -v '^$' || true)
+          if [ -n "$UNEXPECTED" ]; then
+            echo "ERROR FATAL: .rej en archivos inesperados:"
+            echo "$UNEXPECTED"
+            for r in $UNEXPECTED; do
+              echo "### $r ###"
+              cat "$r"
+              echo
+            done
+            exit 1
+          fi
+
+          echo
+          echo "===== 5. Verificar archivos NUEVOS que el patch DEBE crear ====="
+          for f in include/linux/uksm.h include/linux/sradix-tree.h lib/sradix-tree.c mm/uksm.c; do
+            [ -f "$f" ] || { echo "ERROR FATAL: $f no existe - patch incompleto, compilar es imposible"; exit 1; }
+            echo "OK: $f ($(wc -l < $f) lineas)"
+          done
+
+          echo
+          echo "===== 6. Hook en mm/mmap.c ====="
+          HAS_HOOK=$(grep -c 'uksm_vma_add_new' mm/mmap.c || true)
+          echo "Ocurrencias uksm_vma_add_new: $HAS_HOOK"
+          if [ -f mm/mmap.c.rej ]; then
+            echo "mmap.c.rej presente - el hunk de vma_adjust no aplico. Aplicando fix manual."
+            [ "$HAS_HOOK" = "0" ] || { echo "ERROR: .rej presente PERO hook ya presente - estado parcial inesperado"; cat mm/mmap.c.rej; exit 1; }
+            cat > /tmp/fix_mmap.py <<'PYEOF'
+          import sys
+          path = sys.argv[1]
+          OLD = '\t\telse\n\t\t\tVM_WARN_ON(mm->highest_vm_end != vm_end_gap(vma));\n\t}\n\tif (insert && file)\n\t\tuprobe_mmap(insert);\n\n\tvalidate_mm(mm);'
+          NEW = '\t\telse\n\t\t\tVM_WARN_ON(mm->highest_vm_end != vm_end_gap(vma));\n\t} else {\n\t\tif (next && !insert)\n\t\t\tuksm_vma_add_new(next);\n\t}\n\tif (insert && file)\n\t\tuprobe_mmap(insert);\n\n\tuksm_vma_add_new(vma);\n\tvalidate_mm(mm);'
+          with open(path, 'r') as f:
+              content = f.read()
+          count = content.count(OLD)
+          if count != 1:
+              print(f"ERROR: anchor encontrado {count} veces (esperado 1). Abortando sin modificar.")
+              sys.exit(1)
+          with open(path, 'w') as f:
+              f.write(content.replace(OLD, NEW, 1))
+          print("OK: hook vma_adjust insertado.")
+          PYEOF
+            python3 /tmp/fix_mmap.py mm/mmap.c
+            grep -q 'uksm_vma_add_new(vma);' mm/mmap.c || { echo "ERROR: fix manual fallo"; exit 1; }
+            grep -q 'uksm_vma_add_new(next);' mm/mmap.c || { echo "ERROR: fix manual no inserto branch next"; exit 1; }
+            rm -f mm/mmap.c.rej
+            echo "Fix manual aplicado, .rej limpiado."
+          fi
+
+          echo
+          echo "===== 7. Fix portabilidad: const en is_full_zero() ====="
+          if grep -q '^\tunsigned long \*src = s1;$' mm/uksm.c; then
+            sed -i 's/^\tunsigned long \*src = s1;$/\tconst unsigned long *src = s1;/' mm/uksm.c
+          fi
+          grep -q 'const unsigned long \*src = s1' mm/uksm.c || { echo "ERROR: no se pudo aplicar fix const"; grep -n 'src = s1' mm/uksm.c; exit 1; }
+          echo "OK"
+
+          echo
+          echo "===== 8. Asegurar #include <linux/uksm.h> en mm/mmap.c ====="
+          if ! grep -q '#include <linux/uksm.h>' mm/mmap.c; then
+            awk 'BEGIN{done=0} /^#include <linux\/mm\.h>/{if(!done){print; print "#include <linux/uksm.h>"; done=1; next}} {print}' mm/mmap.c > /tmp/mmap.c.tmp && mv /tmp/mmap.c.tmp mm/mmap.c
+          fi
+          grep -q '#include <linux/uksm.h>' mm/mmap.c || { echo "ERROR: no se pudo insertar include"; exit 1; }
+          echo "OK"
+
+          echo
+          echo "===== 9. Activar CONFIG_UKSM en defconfig ====="
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          grep -q '^CONFIG_KSM=y' "$DEFCONFIG" || echo "CONFIG_KSM=y" >> "$DEFCONFIG"
+          sed -i '/^CONFIG_KSM_LEGACY=y/d' "$DEFCONFIG"
+          if grep -q '^# CONFIG_UKSM is not set' "$DEFCONFIG"; then
+            sed -i 's/^# CONFIG_UKSM is not set/CONFIG_UKSM=y/' "$DEFCONFIG"
+          else
+            grep -q '^CONFIG_UKSM=y' "$DEFCONFIG" || echo "CONFIG_UKSM=y" >> "$DEFCONFIG"
+          fi
+          grep -n 'CONFIG_UKSM\|CONFIG_KSM' "$DEFCONFIG"
+
+          echo
+          echo "===== 10. Resumen ====="
+          echo ".rej residuales: $(find . -name '*.rej' | wc -l) (deberia ser 0)"
+          echo "CONFIG_UKSM en defconfig: $(grep '^CONFIG_UKSM' $DEFCONFIG)"
 
       # ============================================================
       # 8c. TTL/HL spoofing (netfilter xt_HL) - ya verificado en clon de
@@ -510,7 +583,7 @@ jobs:
           grep -n "CONFIG_NETFILTER_XT_TARGET_HL" "$DEFCONFIG"
 
       # ============================================================
-      # 8b. USB Fast Charge - separar cable_number=4 (USB, SEC_BATTERY_
+      # 8d. USB Fast Charge - separar cable_number=4 (USB, SEC_BATTERY_
       # CABLE_USB) de current_group_1 en su propio grupo, subiendo SOLO
       # ese cable de 500mA a 900mA (punto de partida moderado, confirmado
       # con el usuario - hay margen fisico: default_charging_current del
@@ -573,7 +646,7 @@ jobs:
           rm "$F.orig"
 
       # ============================================================
-      # 8. ZRAM: activar lz4 (zstd no soportado en este kernel 4.4)
+      # 8e. ZRAM: activar lz4 (zstd no soportado en este kernel 4.4)
       # ============================================================
 
       - name: Enable lz4 compression for zram (zstd no compatible)
@@ -827,7 +900,11 @@ jobs:
           grep -q "CONFIG_KSM=y" out/.config || { echo "ERROR: KSM no activo en .config"; exit 1; }
           grep -q "CONFIG_THERMAL_WRITABLE_TRIPS=y" out/.config || { echo "ERROR: THERMAL_WRITABLE_TRIPS no activo en .config"; exit 1; }
           grep -q "CONFIG_TRANSPARENT_HUGEPAGE=y" out/.config || { echo "ERROR: THP no activo en .config"; exit 1; }
-          # UKSM desactivado temporalmente (ver step "Apply UKSM patch") - sin verificacion aqui
+          grep -q "CONFIG_UKSM=y" out/.config || { echo "ERROR: UKSM no activo en .config"; exit 1; }
+          if grep -q "CONFIG_KSM_LEGACY=y" out/.config; then
+            echo "ERROR: KSM_LEGACY activo - excluiria a UKSM en runtime"; exit 1
+          fi
+          echo "UKSM OK (KSM_LEGACY ausente)"
           grep -q "CONFIG_NETFILTER_XT_TARGET_HL=y" out/.config || { echo "ERROR: TTL/HL (NETFILTER_XT_TARGET_HL) no activo en .config"; exit 1; }
           # BBR es opcional (depende de si el donante lo trae backporteado a 4.4) - no bloquea el build
           if grep -q "CONFIG_TCP_CONG_BBR=y" out/.config; then
@@ -926,6 +1003,7 @@ jobs:
             - fq qdisc (activo, compilado nativamente en este árbol)
             - TCP BBR: ${BBR_STATUS:-unavailable} (ver log del step "Port TCP BBR from donor"; si es "unavailable" el kernel usa cubic+fq igual)
             - KSM (Kernel Samepage Merging, se activa por script)
+            - UKSM (reemplazo agresivo de KSM, CONFIG_UKSM=y - KSM_LEGACY desactivado)
             - GPU DVFS: umbrales corregidos en los 3 escalones superiores
             - Input booster nativo: techo de TOUCH/MULTITOUCH subido a 2184000
             - Watchdog de salud del touch IC Imagis IST40XX
