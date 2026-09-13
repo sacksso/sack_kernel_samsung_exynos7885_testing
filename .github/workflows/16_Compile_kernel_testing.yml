@@ -451,19 +451,19 @@ jobs:
             OLD=$'\t\telse\n\t\t\tVM_WARN_ON(mm->highest_vm_end != vm_end_gap(vma));\n\t}\n\tif (insert && file)\n\t\tuprobe_mmap(insert);\n\n\tvalidate_mm(mm);'
             NEW=$'\t\telse\n\t\t\tVM_WARN_ON(mm->highest_vm_end != vm_end_gap(vma));\n\t} else {\n\t\tif (next && !insert)\n\t\t\tuksm_vma_add_new(next);\n\t}\n\tif (insert && file)\n\t\tuprobe_mmap(insert);\n\n\tuksm_vma_add_new(vma);\n\tvalidate_mm(mm);'
             python3 - "$FILE" "$OLD" "$NEW" <<'PYEOF'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(path, "r") as f:
-    content = f.read()
-count = content.count(old)
-if count != 1:
-    print(f"ERROR: anchor encontrado {count} veces (se esperaba 1). No se modifica el archivo.")
-    sys.exit(1)
-content = content.replace(old, new, 1)
-with open(path, "w") as f:
-    f.write(content)
-print("Hook de vma_adjust() insertado correctamente.")
-PYEOF
+          import sys
+          path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+          with open(path, "r") as f:
+              content = f.read()
+          count = content.count(old)
+          if count != 1:
+              print(f"ERROR: anchor encontrado {count} veces (se esperaba 1). No se modifica el archivo.")
+              sys.exit(1)
+          content = content.replace(old, new, 1)
+          with open(path, "w") as f:
+              f.write(content)
+          print("Hook de vma_adjust() insertado correctamente.")
+          PYEOF
           fi
 
           echo "--- Verificación ---"
