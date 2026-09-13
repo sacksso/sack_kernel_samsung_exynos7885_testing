@@ -429,11 +429,54 @@ jobs:
       - name: Apply UKSM patch (isolated, verify before trusting on low disk space)
         working-directory: kernel
         run: |
-          echo "DESACTIVADO 2026-09-13: los 2 intentos previos (patch 4.4 original y el"
-          echo "hook literal de uksm-4.18.patch contra VM_WARN_ON) fallaron - ninguna de"
-          echo "las 2 suposiciones sobre el texto real de mm/mmap.c en este arbol coincide."
-          echo "Ver step de diagnostico siguiente para el texto real antes de reintentar."
-          echo "skip"
+          FILE=mm/mmap.c
+          # Intento 3 - CONFIRMADO contra el diagnóstico real (step
+          # siguiente en runs anteriores): este árbol (4.4.302, post
+          # backport "larger stack guard gap") tiene en vma_adjust():
+          #   else
+          #           VM_WARN_ON(mm->highest_vm_end != vm_end_gap(vma));
+          #   }
+          #   if (insert && file)
+          #           uprobe_mmap(insert);
+          #
+          #   validate_mm(mm);
+          # Los intentos 1 y 2 asumieron un texto distinto (uksm-4.4.patch
+          # y uksm-4.18.patch respectivamente) que no matcheaba byte a
+          # byte. Este anchor viene del hunk real de uksm-4.9.patch
+          # (mismo hook conceptual: agregar la rama "else" que llama
+          # uksm_vma_add_new(next), y la llamada final uksm_vma_add_new(vma)
+          # antes de validate_mm), adaptado al texto EXACTO confirmado de
+          # este árbol (vm_end_gap(vma) en vez de "end").
+          if ! grep -q "uksm_vma_add_new(vma);" "$FILE"; then
+            OLD=$'\t\telse\n\t\t\tVM_WARN_ON(mm->highest_vm_end != vm_end_gap(vma));\n\t}\n\tif (insert && file)\n\t\tuprobe_mmap(insert);\n\n\tvalidate_mm(mm);'
+            NEW=$'\t\telse\n\t\t\tVM_WARN_ON(mm->highest_vm_end != vm_end_gap(vma));\n\t} else {\n\t\tif (next && !insert)\n\t\t\tuksm_vma_add_new(next);\n\t}\n\tif (insert && file)\n\t\tuprobe_mmap(insert);\n\n\tuksm_vma_add_new(vma);\n\tvalidate_mm(mm);'
+            python3 - "$FILE" "$OLD" "$NEW" <<'PYEOF'
+import sys
+path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path, "r") as f:
+    content = f.read()
+count = content.count(old)
+if count != 1:
+    print(f"ERROR: anchor encontrado {count} veces (se esperaba 1). No se modifica el archivo.")
+    sys.exit(1)
+content = content.replace(old, new, 1)
+with open(path, "w") as f:
+    f.write(content)
+print("Hook de vma_adjust() insertado correctamente.")
+PYEOF
+          fi
+
+          echo "--- Verificación ---"
+          grep -n "uksm_vma_add_new" "$FILE" || { echo "ERROR: el hook no quedó aplicado"; exit 1; }
+
+          echo
+          echo "AVISO: este es solo el hunk de vma_adjust() que fallaba. NO cubre"
+          echo "el insert de uksm_remove_vma(next) dentro de la rama remove_next==2"
+          echo "(esa parte de la función mostró una estructura mas simple en el"
+          echo "diagnostico real, sin el bloque 'end = next->vm_end;' que"
+          echo "uksm-4.9.patch asume - no se tocó por no tener el anchor exacto"
+          echo "confirmado. Es un caso de limpieza secundario, no bloquea el build,"
+          echo "pero revisar aparte si aparecen leaks o vmas huerfanos en remove_next==2."
 
       # ============================================================
       # Diagnostico puro (no bloqueante, no adivina): texto REAL de la
