@@ -129,6 +129,31 @@ jobs:
         continue-on-error: true
 
       # ============================================================
+      # 1c. DIAGNÓSTICO (no bloqueante): valores REALES de los arrays
+      #     lowmem_adj[]/lowmem_minfree[] del LMK (no solo su ubicación,
+      #     ya confirmada en corrida anterior: drivers/staging/android/
+      #     lowmemorykiller.c, lowmem_minfree_size=4). Sin esto, cualquier
+      #     minfree propuesto sería adivinar sobre 4 niveles de los que no
+      #     conocemos ni los KB ni el oom_adj real de cada uno.
+      #     También repite el grep de "low_latency" en BFQ pero DESPUÉS
+      #     de portarlo del donante (el step 1b corría ANTES de que el
+      #     archivo existiera en el árbol, por eso salió vacío el 2026-09-14).
+      # ============================================================
+
+      - name: Diagnose real LMK minfree/adj arrays and BFQ low_latency (post-donor)
+        run: |
+          echo "===== LMK: contenido real de los arrays default (kernel propio) ====="
+          grep -n -B2 -A20 "static.*lowmem_adj\[\]\|static.*lowmem_minfree\[\]\|lowmem_adj\[6\]\|lowmem_minfree\[6\]\|lowmem_adj\[4\]\|lowmem_minfree\[4\]" kernel/drivers/staging/android/lowmemorykiller.c 2>/dev/null || echo "(sin coincidencias con esos patrones - probar con menos contexto abajo)"
+          echo "--- fallback: cualquier línea con 'lowmem_adj' o 'lowmem_minfree' (declaración o uso) ---"
+          grep -n "lowmem_adj\|lowmem_minfree" kernel/drivers/staging/android/lowmemorykiller.c 2>/dev/null
+          echo "--- valores por defecto en runtime (module_param_array), si vienen seteados en el mismo archivo ---"
+          grep -n -B2 -A5 "module_param_array_named" kernel/drivers/staging/android/lowmemorykiller.c 2>/dev/null
+          echo
+          echo "===== BFQ low_latency: repetido DESPUÉS del checkout, sobre el donante directo (no espera al step de port) ====="
+          grep -n -B3 -A20 "low_latency" donor/block/bfq-iosched.c 2>/dev/null || echo "(sin coincidencias en donor/block/bfq-iosched.c - confirmar ruta real)"
+        continue-on-error: true
+
+      # ============================================================
       # 2. DEPENDENCIAS
       # ============================================================
 
