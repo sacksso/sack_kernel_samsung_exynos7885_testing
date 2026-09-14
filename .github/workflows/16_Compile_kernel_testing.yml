@@ -154,6 +154,37 @@ jobs:
         continue-on-error: true
 
       # ============================================================
+      # 1d. DIAGNÓSTICO (no bloqueante): estado real de F2FS - qué está
+      #     compilado hoy (defconfig propio) vs qué opciones existen en
+      #     el Kconfig del propio árbol (compiladas o no) vs qué trae el
+      #     donante (por si ya backporteó algo más nuevo, mismo patrón
+      #     que se usó para BFQ/WireGuard). Kernel 4.4.302 es de una era
+      #     de F2FS sin compresión/ATGC (eso llegó en 5.x) - hay que ver
+      #     con qué versión real se trabaja antes de proponer nada.
+      # ============================================================
+
+      - name: Investigate real F2FS support (own tree vs donor)
+        run: |
+          echo "===== F2FS: opciones activas HOY en el defconfig propio ====="
+          grep -n "F2FS" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null || echo "(ninguna opción F2FS en el defconfig)"
+          echo
+          echo "===== F2FS: TODAS las opciones que existen en el Kconfig del árbol propio (compiladas o no) ====="
+          find kernel/fs/f2fs -maxdepth 1 -type f 2>/dev/null
+          grep -n "^config F2FS" kernel/fs/f2fs/Kconfig 2>/dev/null || echo "(no existe fs/f2fs/Kconfig en este árbol - F2FS podría no estar portado)"
+          echo
+          echo "===== F2FS: versión aproximada (buscar firma de features conocidas: compresión, ATGC, extent cache) ====="
+          grep -rn "F2FS_FS_COMPRESSION\|F2FS_FS_LZ4\|F2FS_FS_ZSTD\|COMPRESS_EXT" kernel/fs/f2fs/Kconfig 2>/dev/null || echo "(sin soporte de compresión visible - esperado en un backport 4.4)"
+          grep -rln "extent_cache\|f2fs_extent" kernel/fs/f2fs 2>/dev/null | head -5
+          echo
+          echo "===== F2FS: mismo chequeo contra el donante (¿trae algo más nuevo para portar?) ====="
+          find donor/fs/f2fs -maxdepth 1 -type f 2>/dev/null || echo "(el donante no trae fs/f2fs en absoluto)"
+          grep -n "F2FS" donor/arch/arm64/configs/*defconfig* 2>/dev/null | head -40
+          echo
+          echo "===== F2FS: sysfs tunables ya existentes en el driver propio (para tuning en runtime, no Kconfig) ====="
+          grep -rln "f2fs_attr\|F2FS_RW_ATTR\|F2FS_GENERAL_RO_ATTR" kernel/fs/f2fs 2>/dev/null
+        continue-on-error: true
+
+      # ============================================================
       # 2. DEPENDENCIAS
       # ============================================================
 
@@ -624,48 +655,6 @@ jobs:
           diff "$F.orig" "$F" || true
           rm "$F.orig"
       # ============================================================
-      # GPU OC TESTING (experimental, solo rama testing): sube gpu_max_clock
-      # de 1100000 a 1200000. Fila 1200000 ya existe en gpu_dvfs_table (ver
-      # step de arriba) pero está por encima del techo ASV real confirmado
-      # en código (vdd_g3d_lut[] techo 1196000) - se acepta a sabiendas de
-      # ese excedente de ~4MHz, NO es un corner calibrado limpio.
-      # RIESGO CONFIRMADO EN CÓDIGO (no hipotético): ra_set_pll() en ra.c
-      # cae a pll_find_table() cuando la frecuencia pedida no está en la
-      # tabla ASV - calcula y aplica un PLL real a la frecuencia pedida sin
-      # más chequeo. gpu_control.c no tiene ningún control de voltaje real
-      # atado a este cambio (gpu_get_cur_voltage() es un stub que devuelve
-      # 0). Es decir: el reloj SÍ puede llegar a 1200000 en el silicio, pero
-      # sin ningún margen de voltaje adicional. Mantener SOLO en la rama de
-      # testing, con kernel stock listo para flashear.
-      # ============================================================
-
-      - name: Bump gpu_max_clock to 1200000 (TESTING OC - GPU, no revertir a rama final sin quitar esto)
-        working-directory: kernel
-        run: |
-          CANDIDATES=$(grep -rl "gpu_dvfs_table_size" arch/arm64/boot/dts 2>/dev/null | grep "7885")
-          COUNT=$(echo "$CANDIDATES" | grep -c . || true)
-          if [ -z "$CANDIDATES" ] || [ "$COUNT" != "1" ]; then
-            echo "ERROR: no se encontró exactamente 1 archivo con gpu_dvfs_table_size y '7885' en la ruta."
-            echo "Candidatos con 7885 en la ruta ($COUNT encontrados):"
-            echo "$CANDIDATES"
-            exit 1
-          fi
-          F="$CANDIDATES"
-          echo "Archivo encontrado (filtrado a exynos7885): $F"
-          cp "$F" "$F.orig"
-          if [ "$(grep -c 'gpu_max_clock = <1100000>;' "$F")" != "1" ]; then
-            echo "ERROR: no se encontró exactamente 1 ocurrencia de 'gpu_max_clock = <1100000>;' (¿ya se cambió antes?)"
-            grep -n "gpu_max_clock" "$F"
-            exit 1
-          fi
-          sed -i 's/gpu_max_clock = <1100000>;/gpu_max_clock = <1200000>;/' "$F"
-          [ "$(grep -c 'gpu_max_clock = <1200000>;' "$F")" = "1" ] || { echo "ERROR: gpu_max_clock no quedó en 1200000"; diff "$F.orig" "$F"; exit 1; }
-          # Las filas de gpu_dvfs_table (umbrales ya ajustados en step anterior) no deben tocarse acá
-          grep -q '1200000 90   95  1' "$F" || { echo "ERROR: la fila 1200000 de gpu_dvfs_table cambió inesperadamente"; diff "$F.orig" "$F"; exit 1; }
-          echo "--- Diff completo aplicado ---"
-          diff "$F.orig" "$F" || true
-          rm "$F.orig"
-      # ============================================================
       # GAMING TUNING 2/2: techo de boost táctil (input_booster nativo de
       # Samsung, YA ACTIVO en drivers/input/input.c a nivel genérico de
       # input_event() - NO requiere CONFIG_INPUT_BOOSTER, que de hecho
@@ -806,6 +795,88 @@ jobs:
           [ "$(grep -c 'health_check_work_func' "$F")" = "2" ] || { echo "ERROR: función no se insertó (o se duplicó)"; exit 1; }
           echo "OK: las 5 inserciones aplicaron exactamente una vez cada una"
       # ============================================================
+      # RENDIMIENTO SIN OC 1/N: LMK - expandir de 4 a los 6 niveles reales
+      # que el array ya soporta (declarado [6], pero lowmem_adj_size/
+      # lowmem_minfree_size quedaban en 4 - los últimos 2 slots existían
+      # en el binario pero nunca se usaban). Confirmado con valores reales
+      # del log del CI (run #21, 2026-09-14): adj={0,1,6,12},
+      # minfree={6,8,16,64}MB. Se mantienen los 4 adj originales tal cual
+      # (no se inventan), se les da más margen, y se insertan 2 niveles
+      # nuevos en la posición correcta (9 entre 6 y 12, 15 como techo real
+      # tipo EMPTY_APP) para que el sistema deje de matar background con
+      # apenas 64MB libres en un equipo de 4GB. Aritmética verificada:
+      # unidades del driver = páginas de 4KB (3*1024=3072 pág=12MB, etc).
+      # ============================================================
+
+      - name: Tune LMK to real 6-tier minfree/adj (4GB RAM profile)
+        working-directory: kernel
+        run: |
+          F=drivers/staging/android/lowmemorykiller.c
+          if [ ! -f "$F" ]; then
+            echo "ERROR: no se encontró $F en la ruta esperada"
+            find . -iname "lowmemorykiller.c" 2>/dev/null
+            exit 1
+          fi
+          cp "$F" "$F.orig"
+          python3 - "$F" << 'PYEOF'
+          import sys
+          path = sys.argv[1]
+          with open(path) as f:
+              content = f.read()
+          old = (
+              "static short lowmem_adj[6] = {\n"
+              "\t0,\n"
+              "\t1,\n"
+              "\t6,\n"
+              "\t12,\n"
+              "};\n"
+              "static int lowmem_adj_size = 4;\n"
+              "static int lowmem_minfree[6] = {\n"
+              "\t3 * 512,\t/* 6MB */\n"
+              "\t2 * 1024,\t/* 8MB */\n"
+              "\t4 * 1024,\t/* 16MB */\n"
+              "\t16 * 1024,\t/* 64MB */\n"
+              "};\n"
+              "static int lowmem_minfree_size = 4;\n"
+          )
+          new = (
+              "static short lowmem_adj[6] = {\n"
+              "\t0,\n"
+              "\t1,\n"
+              "\t6,\n"
+              "\t9,\n"
+              "\t12,\n"
+              "\t15,\n"
+              "};\n"
+              "static int lowmem_adj_size = 6;\n"
+              "static int lowmem_minfree[6] = {\n"
+              "\t3 * 1024,\t/* 12MB */\n"
+              "\t4608,\t\t/* 18MB */\n"
+              "\t7 * 1024,\t/* 28MB */\n"
+              "\t10240,\t\t/* 40MB */\n"
+              "\t16 * 1024,\t/* 64MB */\n"
+              "\t23040,\t\t/* 90MB */\n"
+              "};\n"
+              "static int lowmem_minfree_size = 6;\n"
+          )
+          if old not in content:
+              print("ERROR: el bloque original de lowmem_adj/lowmem_minfree no coincidió exacto (¿cambió el whitespace o el árbol?)")
+              sys.exit(1)
+          if content.count(old) != 1:
+              print(f"ERROR: el bloque original apareció {content.count(old)} veces, se esperaba 1")
+              sys.exit(1)
+          content = content.replace(old, new)
+          with open(path, "w") as f:
+              f.write(content)
+          print("OK: bloque LMK reemplazado exactamente 1 vez")
+          PYEOF
+          grep -q "static int lowmem_adj_size = 6;" "$F" || { echo "ERROR: lowmem_adj_size no quedó en 6"; diff "$F.orig" "$F"; exit 1; }
+          grep -q "static int lowmem_minfree_size = 6;" "$F" || { echo "ERROR: lowmem_minfree_size no quedó en 6"; diff "$F.orig" "$F"; exit 1; }
+          grep -q "16 \* 1024" "$F" && grep -q "64MB" "$F" || { echo "ERROR: el nivel adj=12 (64MB) no se preservó tal cual"; diff "$F.orig" "$F"; exit 1; }
+          echo "--- Diff completo aplicado ---"
+          diff "$F.orig" "$F" || true
+          rm "$F.orig"
+      # ============================================================
       # 11. COMPILACIÓN (con verificaciones de .config)
       # ============================================================
 
@@ -928,7 +999,6 @@ jobs:
             - TCP BBR: ${BBR_STATUS:-unavailable} (ver log del step "Port TCP BBR from donor"; si es "unavailable" el kernel usa cubic+fq igual)
             - KSM (Kernel Samepage Merging, se activa por script)
             - GPU DVFS: umbrales corregidos en los 3 escalones superiores
-            - GPU OC TESTING (EXPERIMENTAL, sin control de voltaje confirmado): gpu_max_clock 1100000 -> 1200000
             - Input booster nativo: techo de TOUCH/MULTITOUCH subido a 2184000
             - Watchdog de salud del touch IC Imagis IST40XX
           NOTA: build de TESTING. read_ahead_kb, dirty_ratio/dirty_background_ratio,
