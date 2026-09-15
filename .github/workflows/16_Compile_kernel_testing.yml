@@ -591,6 +591,43 @@ jobs:
           echo "--- Diff completo aplicado ---"
           diff "$F.orig" "$F" || true
           rm "$F.orig"
+
+      # ============================================================
+      # 8a. DIAGNOSTICO: estructura real para insertar nodos
+      #     freqvar-boost (schedtune-freqvar). NO inserta nada todavia -
+      #     solo confirma el archivo y el punto de insercion seguro antes
+      #     de tocar sintaxis DTS (el compilador dtc es estricto, un nodo
+      #     mal anidado rompe la compilacion).
+      # ============================================================
+
+      - name: Diagnose real DT structure for freqvar-boost node insertion (non-fatal)
+        working-directory: kernel
+        continue-on-error: true
+        run: |
+          echo "===== 1. ¿Dónde vive el nodo 'cpus {' de verdad? ====="
+          grep -rn "cpus {" arch/arm64/boot/dts/exynos/*.dtsi arch/arm64/boot/dts/exynos/*.dts 2>/dev/null
+
+          echo
+          echo "===== 2. Contexto completo alrededor de cpu7 (BIG) y su cierre ====="
+          F_CPUS=$(grep -rl "compatible = \"arm,cortex-a73\"" arch/arm64/boot/dts/exynos/*.dtsi arch/arm64/boot/dts/exynos/*.dts 2>/dev/null | head -1)
+          echo "Archivo: $F_CPUS"
+          if [ -n "$F_CPUS" ]; then
+            grep -n "cpu7\|cortex-a73" "$F_CPUS"
+            echo "--- 40 líneas después de la última referencia a cpu7 ---"
+            LINE=$(grep -n "cortex-a73" "$F_CPUS" | tail -1 | cut -d: -f1)
+            sed -n "${LINE},$((LINE+40))p" "$F_CPUS" | cat -n
+          fi
+
+          echo
+          echo "===== 3. ¿Ya existe algún nodo 'schedtune-freqvar' o 'device_type = \"cpufreq-domain\"' como referencia de formato? ====="
+          grep -rn "schedtune-freqvar\|device_type = \"cpufreq-domain\"" arch/arm64/boot/dts/exynos/*.dtsi arch/arm64/boot/dts/exynos/*.dts 2>/dev/null | head -10
+
+          echo
+          echo "===== 4. Confirmar que el archivo del USB fast charge (cable_number) es o no el mismo que el de cpus ====="
+          F_USB=$(grep -rl "cable_number = <1 4 19 21 22 23 30>;\|cable_number = <1 19 21 22 23 30>;" arch/arm64/boot/dts/exynos/*.dtsi arch/arm64/boot/dts/exynos/*.dts 2>/dev/null | grep "a7y18lte")
+          echo "Archivo USB: $F_USB"
+          echo "¿Es el mismo que el de cpus?: $([ "$F_USB" = "$F_CPUS" ] && echo SI || echo NO)"
+
       # ============================================================
       # 8. ZRAM: activar lz4 (zstd no soportado en este kernel 4.4)
       # ============================================================
