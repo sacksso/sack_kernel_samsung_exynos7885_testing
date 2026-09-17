@@ -667,8 +667,64 @@ jobs:
           rm "$F.orig"
 
       # ============================================================
-      # 8. ZRAM: activar lz4 (zstd no soportado en este kernel 4.4)
+      # 8a3. OC CPU opt-in vía parámetro de arranque (cpu_max_c1/c2).
+      # Origen: c26f9bdbd + cb423f5a1 de un kernel de terceros para este
+      # mismo dispositivo (ver OC_PORTING_CONTEXT.md / PORTING_CONTEXT.md).
+      # Mapeo domain->id confirmado en ESTE arbol (no asumido del origen):
+      # domain@0 (sibling-cpus "0-5") = LITTLE Cortex-A53 -> cpu_max_c1
+      # domain@1 (sibling-cpus "6-7") = BIG Cortex-A73    -> cpu_max_c2
+      # (mismo mapeo que el kernel origen, coincidencia confirmada, no
+      # asumida - ver step "Insert freqvar-boost DT nodes" arriba).
+      #
+      # DIFERENCIA DE DISEÑO A PROPOSITO respecto al kernel origen: alli
+      # arg_cpu_max_c1/c2 vienen hardcodeados a 1690000/2184000 (el OC
+      # esta activo por defecto, el parametro de boot es para bajarlo).
+      # Aca se invierte: default = 0 = SIN CAMBIOS (domain->max_freq queda
+      # exactamente como lo calcula CAL/DT, igual que sin este patch). El
+      # OC solo se activa si se agrega explicitamente cpu_max_c1=<khz> o
+      # cpu_max_c2=<khz> a la cmdline del kernel - opt-in, no opt-out,
+      # consistente con la politica de "cero overclock por defecto" del
+      # resto de este proyecto. Compilar esto NO cambia nada en el
+      # telefono hasta que se edite la cmdline a proposito.
       # ============================================================
+
+      - name: Add CPU OC opt-in (cpu_max_c1/c2 boot params, default = no-op)
+        working-directory: kernel
+        run: |
+          F=drivers/cpufreq/exynos-acme.c
+          if [ ! -f "$F" ]; then
+            echo "ERROR: no se encontró $F"
+            exit 1
+          fi
+          cp "$F" "$F.orig"
+
+          ANCHOR_FUNC='static __init int init_domain(struct exynos_cpufreq_domain *domain,'
+          grep -qF "$ANCHOR_FUNC" "$F" || { echo "ERROR: no se encontró init_domain() - revisar a mano"; exit 1; }
+
+          # 1. Insertar el parser + variables globales justo antes de init_domain()
+          perl -0777 -pi -e 's|(static __init int init_domain\(struct exynos_cpufreq_domain \*domain,)|/*\n * OC opt-in (ver comentario del workflow). Default 0 = sin cambios.\n */\nstatic unsigned long arg_cpu_max_c1;\nstatic int __init cpufreq_read_cpu_max_c1(char *str)\n{\n\tunsigned long ui_khz;\n\tint ret;\n\n\tret = kstrtoul(str, 0, \&ui_khz);\n\tif (ret)\n\t\treturn -EINVAL;\n\n\targ_cpu_max_c1 = ui_khz;\n\tpr_info("exynos-acme: cpu_max_c1=%lu (override LITTLE domain max_freq)\\n", arg_cpu_max_c1);\n\treturn 0;\n}\n__setup("cpu_max_c1=", cpufreq_read_cpu_max_c1);\n\nstatic unsigned long arg_cpu_max_c2;\nstatic int __init cpufreq_read_cpu_max_c2(char *str)\n{\n\tunsigned long ui_khz;\n\tint ret;\n\n\tret = kstrtoul(str, 0, \&ui_khz);\n\tif (ret)\n\t\treturn -EINVAL;\n\n\targ_cpu_max_c2 = ui_khz;\n\tpr_info("exynos-acme: cpu_max_c2=%lu (override BIG domain max_freq)\\n", arg_cpu_max_c2);\n\treturn 0;\n}\n__setup("cpu_max_c2=", cpufreq_read_cpu_max_c2);\n\n$1|' "$F"
+
+          # 2. Insertar la aplicación del override dentro de init_domain(),
+          # justo despues del clamp de min-freq (texto unico confirmado
+          # en este archivo real, con su indentacion exacta con tabs).
+          ANCHOR_MINFREQ='if (!of_property_read_u32(dn, "min-freq", \&val))\n\t\tdomain->min_freq = max(domain->min_freq, val);'
+          perl -0777 -pi -e "s|(if \(!of_property_read_u32\(dn, \"min-freq\", &val\)\)\n\t\tdomain->min_freq = max\(domain->min_freq, val\);)|\$1\n\n\t/*\n\t * OC opt-in: domain->id 0 = LITTLE (sibling-cpus 0-5), domain->id 1\n\t * = BIG (sibling-cpus 6-7) - confirmado contra exynos7885.dtsi de\n\t * este arbol. Sobreescribe max_freq SOLO si el parametro de boot\n\t * fue pasado (valor != 0); sin parametro, comportamiento identico\n\t * al stock.\n\t */\n\tif (domain->id == 0 \&\& arg_cpu_max_c1)\n\t\tdomain->max_freq = arg_cpu_max_c1;\n\telse if (domain->id == 1 \&\& arg_cpu_max_c2)\n\t\tdomain->max_freq = arg_cpu_max_c2;|" "$F"
+
+          echo "--- Verificación ---"
+          grep -q "static unsigned long arg_cpu_max_c1;" "$F" || { echo "ERROR: parser c1 no se insertó"; diff "$F.orig" "$F"; exit 1; }
+          grep -q "static unsigned long arg_cpu_max_c2;" "$F" || { echo "ERROR: parser c2 no se insertó"; diff "$F.orig" "$F"; exit 1; }
+          grep -q '__setup("cpu_max_c1=", cpufreq_read_cpu_max_c1);' "$F" || { echo "ERROR: __setup c1 no se insertó"; exit 1; }
+          grep -q '__setup("cpu_max_c2=", cpufreq_read_cpu_max_c2);' "$F" || { echo "ERROR: __setup c2 no se insertó"; exit 1; }
+          grep -q "if (domain->id == 0 && arg_cpu_max_c1)" "$F" || { echo "ERROR: override de LITTLE no se insertó"; diff "$F.orig" "$F"; exit 1; }
+          grep -q "else if (domain->id == 1 && arg_cpu_max_c2)" "$F" || { echo "ERROR: override de BIG no se insertó"; diff "$F.orig" "$F"; exit 1; }
+          # Exactamente 1 función init_domain() en el archivo - si hubiera
+          # más de una, el anclaje pudo haber insertado en el lugar
+          # equivocado o repetido.
+          [ "$(grep -cF "$ANCHOR_FUNC" "$F")" = "1" ] || { echo "ERROR: init_domain() no es único en el archivo, revisar a mano"; exit 1; }
+
+          echo "--- Diff completo aplicado (REVISAR ANTES DE CONFIAR) ---"
+          diff "$F.orig" "$F" || true
+          rm "$F.orig"
 
       - name: Enable lz4 compression for zram (zstd no compatible)
         working-directory: kernel
