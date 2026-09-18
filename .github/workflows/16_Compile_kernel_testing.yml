@@ -654,9 +654,9 @@ jobs:
       # GAMING TUNING 1/2: umbrales de gpu_dvfs_table (device tree).
       # Las 3 filas superiores (1300/1200/1100 MHz) tenían max_threshold=100
       # (prácticamente inalcanzable en gaming real) mientras el resto de la
-      # tabla usa 95 - se alinean. gpu_max_clock (1100000, confirmado real,
-      # NO 1300000) y gpu_temp_throttling quedan intactos - cero overclock,
-      # solo se corrige un umbral inconsistente en filas ya existentes.
+      # tabla usa 95 - se alinean. gpu_max_clock=1300000 y
+      # gpu_max_clock_limit=1300000 ya son los valores del DTS de este árbol
+      # y quedan intactos - este paso no hace overclock GPU.
       # NOTA (sin resolver, revisar antes de tocar de nuevo): la fila
       # 1200000 también cambia su PRIMER valor (98->90), no solo el
       # max_threshold - el comentario original no explica ese segundo
@@ -684,8 +684,12 @@ jobs:
           [ "$(grep -c '1300000 98   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1300000 no matcheó"; diff "$F.orig" "$F"; exit 1; }
           [ "$(grep -c '1200000 90   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1200000 no matcheó"; diff "$F.orig" "$F"; exit 1; }
           [ "$(grep -c '1100000 90   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1100000 no matcheó"; diff "$F.orig" "$F"; exit 1; }
-          grep -q "gpu_max_clock = <1100000>;" "$F" || {
-            echo "ERROR: gpu_max_clock no coincide con el valor confirmado (1100000)."
+          grep -q "gpu_max_clock = <1300000>;" "$F" || {
+            echo "ERROR: gpu_max_clock no coincide con el DTS esperado (1300000)."
+            grep -n "gpu_max_clock" "$F"; diff "$F.orig" "$F"; exit 1
+          }
+          grep -q "gpu_max_clock_limit = <1300000>;" "$F" || {
+            echo "ERROR: gpu_max_clock_limit no coincide con el DTS esperado (1300000)."
             grep -n "gpu_max_clock" "$F"; diff "$F.orig" "$F"; exit 1
           }
           echo "--- Diff completo aplicado ---"
