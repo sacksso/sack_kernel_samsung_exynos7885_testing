@@ -734,10 +734,18 @@ jobs:
       - name: Port BFQ scheduler and set as default
         working-directory: kernel
         run: |
-          # Copiar archivos BFQ del donante
-          cp -v ../donor/block/bfq-*.c block/ || { echo "ERROR: No se copiaron .c de BFQ"; exit 1; }
-          cp -v ../donor/block/bfq*.h block/ 2>/dev/null || echo "No se encontraron .h en block/"
-          cp -v ../donor/include/linux/bfq*.h include/linux/ 2>/dev/null || echo "No se encontraron .h en include/linux/"
+          # BFQ ya está commiteado en este fork (sacksso/sack_kernel_samsung_exynos7885_testing) -
+          # NO volver a copiar desde donor si ya está, para no pisar en
+          # silencio ningún ajuste propio hecho sobre esos archivos.
+          # Solo copia si de verdad faltan (útil si algún día se corre
+          # este workflow contra un checkout que no los tenga todavía).
+          if [ -f block/bfq-iosched.c ] && [ -f block/bfq.h ]; then
+            echo "BFQ ya presente en el árbol (commiteado en el fork) - no se copia desde donor"
+          else
+            cp -v ../donor/block/bfq-*.c block/ || { echo "ERROR: No se copiaron .c de BFQ"; exit 1; }
+            cp -v ../donor/block/bfq*.h block/ 2>/dev/null || echo "No se encontraron .h en block/"
+            cp -v ../donor/include/linux/bfq*.h include/linux/ 2>/dev/null || echo "No se encontraron .h en include/linux/"
+          fi
           ls -la block/bfq-iosched.c block/bfq.h || { echo "ERROR: faltan archivos BFQ"; exit 1; }
           # Modificar Kconfig.iosched para añadir BFQ
           if ! grep -q "config IOSCHED_BFQ" block/Kconfig.iosched; then
@@ -785,7 +793,13 @@ jobs:
         working-directory: kernel
         run: |
           mkdir -p net/wireguard
-          cp -rv ../donor/net/wireguard/* net/wireguard/ || { echo "ERROR: No se pudo copiar WireGuard"; exit 1; }
+          # WireGuard ya está commiteado en este fork - mismo criterio
+          # que BFQ arriba: no pisar en silencio lo que ya está.
+          if [ -n "$(ls -A net/wireguard 2>/dev/null)" ]; then
+            echo "WireGuard ya presente en el árbol (commiteado en el fork) - no se copia desde donor"
+          else
+            cp -rv ../donor/net/wireguard/* net/wireguard/ || { echo "ERROR: No se pudo copiar WireGuard"; exit 1; }
+          fi
           ls -la net/wireguard/*.c net/wireguard/*.h 2>/dev/null || { echo "ERROR: No se copió WireGuard"; exit 1; }
           if ! grep -q "net/wireguard/Kconfig" net/Kconfig; then
             sed -i '/^endmenu/i source "net/wireguard/Kconfig"' net/Kconfig
@@ -933,6 +947,34 @@ jobs:
           grep -q 'table = < 1690000 1014000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
           grep -q 'table = < 2288000 1794000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
           echo "ACME OC source and DT tables verified"
+
+      # ============================================================
+      # FIX: exynos7885-a7y18lte_eur_open_00.dtb es una revisión de
+      # placa DISTINTA a la real (usa el táctil sec_ts, no Imagis) y
+      # nadie la usa - pero el Makefile la lista bajo el mismo Kconfig
+      # que eur_open_03 (tu hardware real), así que "make" siempre
+      # intenta compilarla. Tiene un bug DTS preexistente en upstream
+      # puro (confirmado: falla igual sin ningún cambio nuestro, en un
+      # clon 100% limpio de exynos7885-dev/kernel_samsung_exynos7885)
+      # que nunca se disparó porque nadie compila esta variante para
+      # nada. NO se toca display-lcd_a7y18_common.dtsi (funciona bien
+      # para eur_open_03 tal cual está, confirmado con `make dtbs` real
+      # contra árbol limpio) - se excluye solo la variante irrelevante,
+      # en vez de arriesgar el archivo compartido que sí usa tu equipo.
+      # ============================================================
+
+      - name: Exclude unused eur_open_00 DTB variant (different hardware, preexisting DTS bug)
+        working-directory: kernel
+        run: |
+          F=arch/arm64/boot/dts/Makefile
+          if ! grep -q "a7y18lte_eur_open_00.dtb" "$F"; then
+            echo "AVISO: la línea de eur_open_00 no está (¿ya se sacó?) - nada que hacer"
+          else
+            sed -i '/a7y18lte_eur_open_00\.dtb$/d' "$F"
+          fi
+          [ "$(grep -c 'a7y18lte_eur_open_00.dtb' "$F")" = "0" ] || { echo "ERROR: no se pudo sacar eur_open_00"; exit 1; }
+          grep -q "a7y18lte_eur_open_03.dtb" "$F" || { echo "ERROR: eur_open_03 desapareció, algo salió mal"; exit 1; }
+          echo "OK: eur_open_00 excluido, eur_open_03 intacto"
 
       - name: Compile kernel
         working-directory: kernel
