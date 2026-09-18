@@ -1,6 +1,6 @@
 name: Build Kernel for a7y18lte - TESTING (schedutil, lz4, cubic, BFQ, WireGuard, BBR, KSM)
 
-on:
+json:
   workflow_dispatch:
 
 jobs:
@@ -711,7 +711,111 @@ jobs:
           echo "--- Diff completo aplicado ---"
           diff "$F.orig" "$F" || true
           rm "$F.orig"
+      # ============================================================
+      # GAMING TUNING 2/2: techo de boost táctil (input_booster nativo de
+      # Samsung, YA ACTIVO en drivers/input/input.c a nivel genérico de
+      # input_event() - NO requiere CONFIG_INPUT_BOOSTER, que de hecho
+      # apagaría esta rama nativa si se activara). Se sube el techo de
+      # TOUCH/MULTITOUCH de 1144000/936000 al máximo real confirmado de la
+      # BIG (2184000, el mismo valor certificado que se usó para descartar
+      # el overclock). KEY/TOUCHKEY/KEYBOARD quedan intactos.
+      # PROBADO 1 DÍA COMPLETO en uso normal sin quejas de batería/calor -
+      # aceptado tal cual. Si hace falta bajar la agresividad en el futuro,
+      # el punto medio sugerido es 1600000-1800000 en vez de 2184000.
+      # ============================================================
 
+      - name: Tune native touch input-booster ceiling for gaming
+        working-directory: kernel
+        run: |
+          F=$(grep -rl 'input_booster,label = "TOUCH"' arch/arm64/boot/dts 2>/dev/null | head -1)
+          if [ -z "$F" ]; then
+            echo "ERROR: no se encontró el archivo con el nodo input_booster TOUCH"
+            exit 1
+          fi
+          echo "Archivo encontrado: $F"
+          cp "$F" "$F.orig"
+          perl -0777 -pi -e 's/(input_booster,label = "TOUCH";.*?input_booster,cpu_freqs = <)1144000 1144000 936000(>;)/${1}2184000 2184000 2184000${2}/s' "$F"
+          perl -0777 -pi -e 's/(input_booster,label = "MULTITOUCH";.*?input_booster,cpu_freqs = <)1144000 936000(>;)/${1}2184000 2184000${2}/s' "$F"
+          grep -A12 'label = "TOUCH"' "$F" | grep -q "cpu_freqs = <2184000 2184000 2184000>;" || { echo "ERROR: TOUCH no se actualizó"; diff "$F.orig" "$F"; exit 1; }
+          grep -A12 'label = "MULTITOUCH"' "$F" | grep -q "cpu_freqs = <2184000 2184000>;" || { echo "ERROR: MULTITOUCH no se actualizó"; diff "$F.orig" "$F"; exit 1; }
+          grep -A12 'label = "KEY"' "$F" | grep -q "cpu_freqs = <1144000>;" || { echo "ERROR: KEY se tocó sin querer"; exit 1; }
+          grep -A12 'label = "TOUCHKEY"' "$F" | grep -q "cpu_freqs = <1144000>;" || { echo "ERROR: TOUCHKEY se tocó sin querer"; exit 1; }
+          echo "--- Diff completo aplicado ---"
+          diff "$F.orig" "$F" || true
+          rm "$F.orig"
+      # ============================================================
+      # 9. BFQ (copiar y hacerlo el scheduler por defecto parcheando Kconfig)
+      # ============================================================
+
+      - name: Port BFQ scheduler and set as default
+        working-directory: kernel
+        run: |
+          # Copiar archivos BFQ del donante
+          cp -v ../donor/block/bfq-*.c block/ || { echo "ERROR: No se copiaron .c de BFQ"; exit 1; }
+          cp -v ../donor/block/bfq*.h block/ 2>/dev/null || echo "No se encontraron .h en block/"
+          cp -v ../donor/include/linux/bfq*.h include/linux/ 2>/dev/null || echo "No se encontraron .h en include/linux/"
+          ls -la block/bfq-iosched.c block/bfq.h || { echo "ERROR: faltan archivos BFQ"; exit 1; }
+          # Modificar Kconfig.iosched para añadir BFQ
+          if ! grep -q "config IOSCHED_BFQ" block/Kconfig.iosched; then
+            cat >> block/Kconfig.iosched << 'EOF'
+          config IOSCHED_BFQ
+            tristate "BFQ I/O scheduler"
+            default y
+            ---help---
+              BFQ (Budget Fair Queueing) is a proportional-share I/O scheduler.
+              It provides low latency and fairness.
+          EOF
+          fi
+          # Parchear Kconfig para añadir DEFAULT_BFQ en la choice "Default I/O scheduler"
+          # (porque no existe nativamente)
+          FILE=block/Kconfig.iosched
+          if ! grep -q "config DEFAULT_BFQ" "$FILE"; then
+            sed -i '/^endchoice/i\config DEFAULT_BFQ\n\tbool "BFQ" if IOSCHED_BFQ=y\n' "$FILE"
+          fi
+          if ! grep -q 'default "bfq" if DEFAULT_BFQ' "$FILE"; then
+            sed -i '/default "noop" if DEFAULT_NOOP/a\	default "bfq" if DEFAULT_BFQ' "$FILE"
+          fi
+          grep -q "config DEFAULT_BFQ" "$FILE" || { echo "ERROR: no se añadió DEFAULT_BFQ al Kconfig"; exit 1; }
+          grep -q 'default "bfq" if DEFAULT_BFQ' "$FILE" || { echo "ERROR: no se mapeó DEFAULT_IOSCHED a bfq"; exit 1; }
+          # Makefile: solo bfq-iosched.o (bfq-cgroup.c se incluye textualmente)
+          if ! grep -q "bfq" block/Makefile; then
+            echo "obj-\$(CONFIG_IOSCHED_BFQ) += bfq-iosched.o" >> block/Makefile
+          fi
+          # Activar en defconfig y seleccionar como default
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_IOSCHED_BFQ is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_IOSCHED_BFQ is not set/CONFIG_IOSCHED_BFQ=y/' "$DEFCONFIG"
+          else
+            echo "CONFIG_IOSCHED_BFQ=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_IOSCHED_BFQ=y" "$DEFCONFIG" || { echo "ERROR: BFQ no activado"; exit 1; }
+          # Eliminar default previo y establecer BFQ
+          sed -i '/^CONFIG_DEFAULT_DEADLINE/d;/^CONFIG_DEFAULT_CFQ/d;/^CONFIG_DEFAULT_NOOP/d;/^CONFIG_DEFAULT_IOSCHED/d' "$DEFCONFIG"
+          echo "CONFIG_DEFAULT_BFQ=y" >> "$DEFCONFIG"
+          grep -n "CONFIG_DEFAULT_BFQ\|CONFIG_DEFAULT_IOSCHED" "$DEFCONFIG" || true
+      # ============================================================
+      # 10. WIREGUARD
+      # ============================================================
+
+      - name: Port WireGuard from donor kernel
+        working-directory: kernel
+        run: |
+          mkdir -p net/wireguard
+          cp -rv ../donor/net/wireguard/* net/wireguard/ || { echo "ERROR: No se pudo copiar WireGuard"; exit 1; }
+          ls -la net/wireguard/*.c net/wireguard/*.h 2>/dev/null || { echo "ERROR: No se copió WireGuard"; exit 1; }
+          if ! grep -q "net/wireguard/Kconfig" net/Kconfig; then
+            sed -i '/^endmenu/i source "net/wireguard/Kconfig"' net/Kconfig
+          fi
+          if ! grep -q "wireguard" net/Makefile; then
+            echo "obj-\$(CONFIG_WIREGUARD) += wireguard/" >> net/Makefile
+          fi
+          if grep -q "^# CONFIG_WIREGUARD is not set" arch/arm64/configs/lineage_a7y18lte_defconfig; then
+            sed -i 's/# CONFIG_WIREGUARD is not set/CONFIG_WIREGUARD=y/' \
+              arch/arm64/configs/lineage_a7y18lte_defconfig
+          else
+            echo "CONFIG_WIREGUARD=y" >> arch/arm64/configs/lineage_a7y18lte_defconfig
+          fi
+          grep -q "CONFIG_WIREGUARD=y" arch/arm64/configs/lineage_a7y18lte_defconfig || { echo "ERROR: WireGuard no activado"; exit 1; }
       # ============================================================
       # WATCHDOG DE SALUD DEL TOUCH IC (Imagis IST40XX)
       # ============================================================
@@ -758,6 +862,19 @@ jobs:
       # ============================================================
       # 11. COMPILACIÓN (con verificaciones de .config)
       # ============================================================
+
+      - name: Verify ACME CPU OC source and DT tables
+        working-directory: kernel
+        run: |
+          test "$(grep -c 'domain->max_freq = 1690000;' drivers/cpufreq/exynos-acme.c)" -eq 1
+          test "$(grep -c 'domain->max_freq = 2288000;' drivers/cpufreq/exynos-acme.c)" -eq 1
+          test "$(grep -c 'policy->max = 2288000' drivers/cpufreq/exynos-acme.c || true)" -eq 0
+          test "$(grep -c 'target_freq = 2288000' drivers/cpufreq/exynos-acme.c || true)" -eq 0
+          grep -q 'sibling-cpus = "0-5"' arch/arm64/boot/dts/exynos/exynos7885.dtsi
+          grep -q 'sibling-cpus = "6-7"' arch/arm64/boot/dts/exynos/exynos7885.dtsi
+          grep -q 'table = < 1690000 1014000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
+          grep -q 'table = < 2288000 1794000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
+          echo "ACME OC source and DT tables verified"
 
       - name: Compile kernel
         working-directory: kernel
