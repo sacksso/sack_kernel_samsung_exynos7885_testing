@@ -1,0 +1,451 @@
+# Ultra handoff para portar mejoras al kernel A7Y18LTE
+
+## 0. Proposito
+
+Este documento se entrega a otra IA que trabajara en otro Dev Space, dentro del
+kernel personalizado de LineageOS 18.1 para Samsung Galaxy A7 2018
+(SM-A750F/A7Y18LTE, Exynos 7885).
+
+La IA receptora debe inspeccionar primero su propio arbol, adaptar los cambios
+a sus versiones reales y ejecutar validaciones. No debe copiar archivos
+completos ni aplicar cambios masivos sin comparar contexto.
+
+Objetivos, en este orden:
+
+1. Confirmar que el kernel destino es realmente A7Y18LTE/Exynos 7885.
+2. Detectar si ya tiene ACME, UFC, CAL/ACPM, tablas DVFS y los dos dominios CPU.
+3. Portar un OC CPU minimo y coherente, solo si las tablas y el firmware lo permiten.
+4. Portar mejoras genericas de bajo riesgo por bloques independientes.
+5. Compilar, empaquetar, arrancar y medir cada bloque por separado.
+
+No desactivar thermal, PM QoS, SELinux enforcing, watchdog ni protecciones de
+voltaje para hacer que una frecuencia parezca funcionar.
+
+---
+
+## 1. Identidad del kernel de referencia
+
+Repositorio local de referencia:
+
+```text
+android_kernel_samsung_a7y18lte_testing
+SoC: Samsung Exynos 7885
+Dispositivo: Galaxy A7 2018 / SM-A750F / a7y18lte
+Arquitectura: arm64
+Base Android: Android Q / LineageOS 18.1 compatible
+Defconfig: exynos7885-a7y18lte_defconfig
+```
+
+Commit base observado en este checkout:
+
+```text
+97e4fbcdb wireguard: Import WireGuard v1.0.20200908
+```
+
+El arbol de referencia contiene dos documentos auxiliares:
+
+```text
+PORTING_CONTEXT.md
+OC_PORTING_CONTEXT.md
+```
+
+Archivos primarios del OC:
+
+```text
+drivers/cpufreq/exynos-acme.c
+drivers/cpufreq/exynos-acme.h
+drivers/cpufreq/exynos-ufc.c
+arch/arm64/boot/dts/exynos/exynos7885.dtsi
+arch/arm64/boot/dts/exynos/exynos7885-a7y18lte_common.dtsi
+arch/arm64/configs/exynos7885-a7y18lte_defconfig
+```
+
+Archivo relacionado con GPU, pero no necesario para el OC de CPU:
+
+```text
+arch/arm64/boot/dts/exynos/exynos7885-mali.dtsi
+```
+
+---
+
+## 2. Instrucciones obligatorias para la IA receptora
+
+Antes de editar, ejecutar en el kernel destino:
+
+```bash
+pwd
+git status --short
+git branch --show-current
+git log -1 --oneline
+find arch/arm64/configs -maxdepth 1 -type f | sort | grep -Ei 'a7|a750|7885|exynos'
+grep -RInE 'exynos7885|a7y18lte|SM-A750|EXYNOS7885' arch/arm64 drivers include 2>/dev/null | head -100
+```
+
+Guardar los resultados antes de tocar nada. Si el destino no coincide con el
+dispositivo/SoC, detener el portado del OC y explicar la incompatibilidad.
+
+Localizar primero las implementaciones, no asumir que los paths coinciden:
+
+```bash
+rg -n 'ARM_EXYNOS_ACME|ARM_EXYNOS_UFC|cpu_max_c1|cpu_max_c2|domain->max_freq|cal_dfs_get_max_freq' .
+rg -n 'sibling-cpus|ACPM_DVFS_CPUCL|dm-type|mif-perf|2184000|2288000|1690000' arch drivers
+rg -n 'gpu_max_clock|gpu_max_clock_limit' arch drivers
+```
+
+Antes de la primera edicion, la IA debe informar:
+
+```text
+- rama y commit del destino;
+- defconfig usado por el destino;
+- si ACME/UFC ya existen;
+- mapeo real de dominios y CPUs;
+- maxima frecuencia CAL y tabla DT de cada dominio;
+- diferencias encontradas frente a este documento.
+```
+
+Si el destino ya tiene cambios del usuario, conservarlos y trabajar encima.
+No ejecutar `git reset`, `git checkout` destructivo ni reemplazar archivos
+completos.
+
+---
+
+## 3. Implementacion exacta del OC de referencia
+
+### 3.1 Valores de referencia
+
+Las frecuencias estan expresadas en kHz:
+
+```text
+CPUs 0-5, domain@0, little: 1690000 kHz = 1.69 GHz
+CPUs 6-7, domain@1, big:    2184000 kHz = 2.184 GHz
+```
+
+El driver tiene parametros de arranque:
+
+```text
+cpu_max_c1=<kHz>
+cpu_max_c2=<kHz>
+```
+
+En el arbol de referencia aparecen como valores por defecto:
+
+```c
+static unsigned long arg_cpu_max_c1 = 1690000;
+unsigned long arg_cpu_max_c2 = 2184000;
+```
+
+Importante: en este driver `domain->id == 0` selecciona `cpu_max_c1` y
+`domain->id == 1` selecciona `cpu_max_c2`. No confiar solo en el nombre c1/c2:
+confirmar el mapeo mediante `sibling-cpus` y `cal-id` del DT destino.
+
+### 3.2 Flujo de inicializacion
+
+En `init_domain()` el flujo es conceptualmente:
+
+```text
+domain->max_freq = cal_dfs_get_max_freq(domain->cal_id)
+domain->min_freq = cal_dfs_get_min_freq(domain->cal_id)
+aplicar max-freq/min-freq del DT si existen
+aplicar limite OC segun domain->id
+inicializar boost
+inicializar UFC y tabla de frecuencias
+inicializar PM QoS
+```
+
+El numero del OC no crea por si solo un OPP nuevo. La frecuencia debe existir
+en la tabla que realmente usa ACME/CAL y debe tener soporte de voltaje, reloj,
+MIF y firmware ACPM/CAL.
+
+### 3.3 Device tree de referencia
+
+El DT de referencia contiene aproximadamente:
+
+```dts
+domain@0 {
+    sibling-cpus = "0-5";
+    cal-id = <ACPM_DVFS_CPUCL1>;
+    dm-type = <DM_CPU_CL0>;
+    table = < 1690000 1014000 ... >;
+};
+
+domain@1 {
+    sibling-cpus = "6-7";
+    cal-id = <ACPM_DVFS_CPUCL0>;
+    dm-type = <DM_CPU_CL1>;
+    table = < 2184000 1794000 ... >;
+};
+```
+
+La segunda columna es la restriccion MIF asociada. No cambiarla sin entender
+la relacion CPU-MIF del destino.
+
+### 3.4 Sobre 2288000 kHz
+
+El kernel objetivo remoto de referencia de `sacksso/sack_kernel_samsung_exynos7885_testing`,
+rama `lineage-18.1`, fue observado forzando 2288000 kHz en multiples puntos.
+Ese valor es mas agresivo que el valor estable de referencia 2184000 kHz.
+
+No portarlo como primera prueba. Solo considerarlo si se demuestra que:
+
+```text
+1. 2288000 aparece en la tabla real;
+2. CAL/ACPM acepta el OPP;
+3. existe voltaje/ASV/PMIC adecuado;
+4. MIF y UFC tienen restricciones coherentes;
+5. thermal sigue funcionando;
+6. el dispositivo alcanza y sostiene el valor sin errores ni reinicios.
+```
+
+No solucionar un fallo eliminando thermal o forzando `policy->max` en varios
+puntos. Debe existir una sola cadena de verdad:
+
+```text
+tabla valida -> domain->max_freq -> policy normal -> PM QoS/thermal normal -> CAL/ACPM
+```
+
+---
+
+## 4. Procedimiento de portado del OC
+
+### Fase A: inspeccion
+
+Comparar en el destino:
+
+```bash
+git grep -n 'cpu_max_c1\|cpu_max_c2\|domain->max_freq\|init_domain'
+git grep -n 'sibling-cpus\|ACPM_DVFS_CPUCL\|mif-perf\|table ='
+git grep -n 'CONFIG_ARM_EXYNOS_ACME\|CONFIG_ARM_EXYNOS_UFC'
+```
+
+Determinar si el destino ya tiene una implementacion propia. Si la tiene,
+adaptarla en vez de duplicar simbolos, parametros o modificaciones.
+
+### Fase B: portado minimo
+
+Aplicar primero solo los cambios necesarios para que el destino tenga:
+
+```text
+- ACME compatible con sus APIs CAL/ACPM;
+- dos dominios CPU correctos;
+- tabla DT con el nivel elegido;
+- CONFIG_ARM_EXYNOS_ACME=y;
+- CONFIG_ARM_EXYNOS_UFC=y si el destino lo necesita;
+- PM QoS/MIF coherentes;
+- thermal y boost intactos.
+```
+
+Usar primero estos objetivos:
+
+```text
+little: 1690000 kHz
+big:    2184000 kHz
+```
+
+No añadir forzados en `target`, `verify`, thermal, boost y policy a la vez.
+
+### Fase C: build y arranque
+
+Identificar el sistema de build del destino antes de reutilizar el script de
+referencia. El script de este repositorio hace:
+
+```bash
+export ARCH=arm64
+export CROSS_COMPILE=../PLATFORM/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-android-
+export ANDROID_MAJOR_VERSION=q
+make exynos7885-a7y18lte_defconfig
+make -j64
+```
+
+La IA receptora debe usar su toolchain, rutas, empaquetador y defconfig reales.
+No asumir que `make -j64` o ese `CROSS_COMPILE` existen en el otro Dev Space.
+
+Validar como minimo:
+
+```bash
+make <defconfig-del-destino>
+make -j"$(nproc)" Image.gz dtbs 2>&1 | tee build.log
+git diff --check
+```
+
+Si el kernel usa `Image.gz-dtb`, `boot.img`, `vendor_boot.img` u otro formato,
+usar el empaquetado propio del destino y registrar exactamente que imagen se
+flasheo.
+
+### Fase D: comprobacion en el dispositivo
+
+Ejecutar primero sin 2288000:
+
+```bash
+uname -a
+cat /proc/version
+cat /proc/cmdline
+cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq
+cat /sys/devices/system/cpu/cpu6/cpufreq/cpuinfo_max_freq
+cat /sys/devices/system/cpu/cpu6/cpufreq/scaling_available_frequencies
+cat /sys/devices/system/cpu/cpu6/cpufreq/scaling_cur_freq
+cat /sys/devices/system/cpu/cpu6/cpufreq/scaling_governor
+dmesg | grep -Ei 'cpu_max|acme|cpufreq|dvfs|acpm|cal|mif|thermal|thrott|opp|voltage|watchdog|panic|error|fail'
+```
+
+Interpretacion:
+
+```text
+max_freq no coincide: build, DT, CAL o policy no son los esperados.
+frecuencia aparece pero no se alcanza: governor, carga, PM QoS o thermal.
+frecuencia se alcanza y reinicia: OPP, voltaje, ASV, PMIC, MIF o CAL.
+2288000 se anuncia sin aparecer en available_frequencies: override inconsistente.
+```
+
+Probar primero CPU0 para little y CPU6 para big. Mantener una imagen anterior
+para rollback y probar temperatura, carga sostenida, suspension, camara, audio,
+red y almacenamiento.
+
+---
+
+## 5. Diagnostico si el OC no funciona
+
+Orden de investigacion, sin saltar pasos:
+
+1. Confirmar que arranco la imagen nueva y el DT nuevo.
+2. Confirmar el defconfig y el commit compilados.
+3. Confirmar dominio y CPU probados: 0-5 little, 6-7 big.
+4. Confirmar `scaling_available_frequencies`.
+5. Confirmar `cpuinfo_max_freq` y `scaling_cur_freq`.
+6. Buscar recortes de PM QoS, UFC y thermal.
+7. Revisar errores de CAL/ACPM/PMIC/OPP.
+8. Solo despues probar el siguiente nivel de frecuencia.
+
+La IA debe reportar la causa concreta y el archivo que la controla. No aceptar
+como solucion una afirmacion de que la frecuencia fue “hardcodeada” si no
+existe en la tabla real o si CAL no la puede ejecutar.
+
+---
+
+## 6. Mejoras adicionales portables, por prioridad
+
+Portarlas como series separadas y compilar despues de cada serie.
+
+### Prioridad alta
+
+#### ZRAM/ZSMALLOC/ZSTD
+
+Revisar:
+
+```text
+drivers/block/zram/
+mm/zsmalloc.c
+mm/zswap.c
+arch/arm64/configs/<defconfig>
+```
+
+Comprobar compatibilidad de APIs antes de portar commits. El beneficio es
+mejor respuesta bajo presion de RAM, con posible coste de CPU y bateria.
+
+#### WireGuard
+
+Revisar el bloque completo:
+
+```text
+net/wireguard/
+net/Kconfig
+net/Makefile
+crypto y CONFIG_WIREGUARD
+```
+
+No copiar solo un archivo. Confirmar compatibilidad con el userspace de
+LineageOS.
+
+#### F2FS
+
+Conservar el F2FS del destino si ya funciona. Si se actualiza, revisar tambien
+VFS, crypto, cifrado, XATTR, ACL y eMMC. No mezclar un F2FS entero de otra base
+sin resolver sus cambios de estructuras y APIs.
+
+### Prioridad media
+
+#### BFQ y schedulers I/O
+
+Revisar `block/bfq-*`, Kconfig, Makefile y defconfig. Medir en eMMC latencia,
+instalacion de apps, arranque, escritura y consumo. No cambiar el scheduler
+por un benchmark secuencial aislado.
+
+#### Governors CPU
+
+Portarlos solo despues de estabilizar ACME y thermal. Un governor agresivo no
+es un OC y puede aumentar throttling y consumo.
+
+#### Wakelock blocker
+
+Revisar `drivers/base/power/boeffla_wl_blocker.*`, `wakeup.c`, Kconfig y
+Makefile. Portar framework y blacklist por separado. Validar llamadas,
+notificaciones y deep sleep antes de conservar una blacklist.
+
+### No portar automaticamente
+
+```text
+thermal maps de otro SoC
+voltajes o tablas ASV/ECT sin comparar hardware
+forzados policy->max repetidos
+desactivacion de thermal/watchdog/SELinux
+parches de scheduler de otra base sin estudiar HMP/EAS/WALT
+device tree completo del kernel de referencia
+```
+
+---
+
+## 7. Contrato de cambios para la IA receptora
+
+Para cada cambio, entregar:
+
+```text
+Objetivo:
+Archivos modificados:
+Por que esos archivos controlan el comportamiento:
+Diferencia exacta frente al destino:
+Riesgo:
+Comando de build:
+Resultado de validacion:
+Rollback:
+```
+
+Reglas:
+
+1. Hacer cambios pequenos y agrupados por funcion.
+2. Ejecutar una validacion enfocada despues de cada grupo.
+3. No ocultar errores de compilacion con cambios no relacionados.
+4. No borrar cambios existentes del usuario.
+5. No afirmar que el OC funciona solo porque compila.
+6. Mantener logs de build, `git diff --check` y logs del dispositivo.
+7. No crear commits automaticamente salvo que el usuario lo pida.
+
+---
+
+## 8. Resultado minimo que debe devolver la otra IA
+
+Antes de finalizar, debe devolver:
+
+```text
+- lista de archivos cambiados;
+- diff resumido por archivo;
+- frecuencia little y big elegida;
+- evidencia de que los niveles existen en las tablas;
+- resultado de compilacion;
+- resultado de git diff --check;
+- comandos de instalacion/empaquetado usados;
+- comandos de validacion en el dispositivo;
+- riesgos restantes y rollback.
+```
+
+Si no puede compilar o probar en hardware, debe decirlo claramente y separar
+“compilado” de “validado en dispositivo”.
+
+## 9. Hipotesis de trabajo
+
+La hipotesis mas fuerte es que el OC falla cuando el destino anuncia un maximo
+mediante policy o hardcode, pero no tiene el mismo nivel en la tabla ACME/DT o
+las mismas restricciones MIF/PM QoS/CAL. La comprobacion mas barata es comparar
+`cpuinfo_max_freq`, `scaling_available_frequencies` y `dmesg` en CPU6.
+
+La primera edicion debe ser la minima que alinee tabla, `domain->max_freq` y
+defconfig. Los valores 1690000/2184000 son el punto inicial de referencia;
+2288000 es una prueba posterior, no el baseline.

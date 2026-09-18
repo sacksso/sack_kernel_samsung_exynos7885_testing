@@ -255,7 +255,6 @@ int ist40xx_set_input_device(struct ist40xx_data *data)
 	set_bit(EV_ABS, data->input_dev->evbit);
 	set_bit(EV_KEY, data->input_dev->evbit);
 	set_bit(INPUT_PROP_DIRECT, data->input_dev->propbit);
-	set_bit(KEY_WAKEUP, data->input_dev->keybit);
 
 	input_set_abs_params(data->input_dev, ABS_MT_PALM, 0, 1, 0, 0);
 	input_set_abs_params(data->input_dev, ABS_MT_POSITION_X, 0,
@@ -389,9 +388,9 @@ void ist40xx_special_cmd(struct ist40xx_data *data, int cmd)
 					input_info(true, &data->client->dev, "Double Tap Trigger~ (%d, %d)\n",
 								data->scrub_x, data->scrub_y);
 #endif
-					input_report_key(data->input_dev, KEY_WAKEUP, true);
+					input_report_key(data->input_dev, KEY_BLACK_UI_GESTURE, true);
 					input_sync(data->input_dev);
-					input_report_key(data->input_dev, KEY_WAKEUP, false);
+					input_report_key(data->input_dev, KEY_BLACK_UI_GESTURE, false);
 					input_sync(data->input_dev);
 				}
 				break;
@@ -464,10 +463,10 @@ void ist40xx_special_cmd(struct ist40xx_data *data, int cmd)
 			data->scrub_y = data->g_reg.b.evt_y;
 			data->all_aod_tsp_count++;
 
-			input_report_key(data->input_dev, KEY_WAKEUP,
+			input_report_key(data->input_dev, KEY_BLACK_UI_GESTURE,
 					 1);
 			input_sync(data->input_dev);
-			input_report_key(data->input_dev, KEY_WAKEUP,
+			input_report_key(data->input_dev, KEY_BLACK_UI_GESTURE,
 					 0);
 			input_sync(data->input_dev);
 		}

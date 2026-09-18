@@ -17,7 +17,7 @@ jobs:
       - name: Checkout kernel
         uses: actions/checkout@v4
         with:
-          repository: exynos7885-dev/kernel_samsung_exynos7885
+          repository: sacksso/sack_kernel_samsung_exynos7885_testing
           ref: lineage-18.1
           path: kernel
           fetch-depth: 1
@@ -51,6 +51,7 @@ jobs:
           grep -rn "INPUT_BOOST\|input_booster\|cpu_input_boost" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig kernel/drivers/Kconfig 2>/dev/null || echo "(sin coincidencias en defconfig/drivers Kconfig)"
           echo "--- donante ---"
           find donor -iname "*input_boost*" -o -iname "*input_booster*" 2>/dev/null || echo "(sin archivos en donante)"
+
           echo
           echo "===== THERMAL (trip points / step_wise) ====="
           echo "--- kernel propio ---"
@@ -58,13 +59,16 @@ jobs:
           grep -rln "trip_point\|step_wise\|set_trip_temp" kernel/drivers/thermal 2>/dev/null || echo "(sin coincidencias en drivers/thermal)"
           echo "--- donante ---"
           find donor/drivers/thermal -maxdepth 2 -type f 2>/dev/null || echo "(sin drivers/thermal en donante)"
+
           echo
           echo "===== INPUT BOOSTER: quién lo usa (call sites) ====="
           echo "--- kernel propio ---"
           grep -rl "input_booster.h\|struct input_booster\|ib_send_event\|input_booster_send_event" kernel/drivers/input 2>/dev/null || echo "(ningún driver de input lo incluye)"
+
           echo
           echo "--- Kconfig symbol INPUT_BOOSTER o SEC_INPUT_BOOSTER en cualquier parte ---"
           grep -rn "config INPUT_BOOSTER\|config SEC_INPUT_BOOSTER\|SEC_INPUT_BOOSTER" kernel donor 2>/dev/null || echo "(ningún símbolo relacionado existe en ningún árbol)"
+
           echo
           echo "===== CONTENIDO COMPLETO de kernel/include/linux/input/input_booster.h ====="
           cat kernel/include/linux/input/input_booster.h 2>/dev/null || echo "(el archivo no existe en esta rama/checkout)"
@@ -79,12 +83,14 @@ jobs:
             grep -rl "trips\|cooling-maps\|polling-delay" kernel/arch/arm64/boot/dts/exynos 2>/dev/null | head -5
           echo "--- CONFIG_THERMAL en defconfig ---"
           grep -n "CONFIG_THERMAL\|CONFIG_EXYNOS_THERMAL" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null
+
           echo
           echo "===== SCHEDULER: sched_migration_cost_ns / sched_wakeup_granularity_ns ====="
           echo "--- ¿CONFIG_SCHED_DEBUG habilitado? (sin esto los sysctl no existen en runtime) ---"
           grep -n "CONFIG_SCHED_DEBUG" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null || echo "(símbolo no encontrado en defconfig)"
           echo "--- valores default en el fuente ---"
           grep -rn "sysctl_sched_migration_cost\s*=\|sysctl_sched_wakeup_granularity\s*=" kernel/kernel/sched/*.c 2>/dev/null
+
           echo
           echo "===== MEMORIA: watermark_scale_factor y THP ====="
           echo "--- ¿existe watermark_scale_factor en este árbol? (llegó a mainline en 4.6, este kernel es 4.4) ---"
@@ -93,12 +99,14 @@ jobs:
           grep -n "CONFIG_TRANSPARENT_HUGEPAGE" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null
           echo "--- modo default de THP en el fuente ---"
           grep -n "TRANSPARENT_HUGEPAGE_.*_ALWAYS\|transparent_hugepage_flags" kernel/mm/huge_memory.c 2>/dev/null | head -10
+
           echo
           echo
           echo "===== FREQVAR_BOOST: ¿mecanismo de boost ya presente sin usar? ====="
           echo "--- (ya sabíamos que kernel/sched/tune.h referencia freqvar_boost_data, ver fix 3.5) ---"
           find kernel -iname "*freqvar_boost*" 2>/dev/null
           grep -rn "config.*FREQVAR_BOOST\|FREQVAR_BOOST" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig kernel/drivers/cpufreq/Kconfig kernel/kernel/sched/Kconfig 2>/dev/null || echo "(símbolo no encontrado en Kconfigs revisados)"
+
           echo
           echo
           echo "===== LMK: driver y minfree default (causa probable de apps recargando desde cero) ====="
@@ -108,9 +116,11 @@ jobs:
           find kernel/drivers -iname "*lowmemorykiller*" -o -iname "*lmk*" 2>/dev/null
           echo "--- minfree/adj default hardcodeado en el driver, si existe ---"
           grep -rn "lowmem_minfree\[\]\|lowmem_adj\[\]\|lowmem_minfree_size\|def_minfree\|LMK_.*_ADJ" kernel/drivers 2>/dev/null | head -20
+
           echo
           echo "===== BFQ: low_latency (prioridad rápida a foreground al lanzar apps) ====="
           grep -n "low_latency" kernel/block/bfq-iosched.c 2>/dev/null | head -10
+
           echo
           echo "===== GPU: reconciliar gpu_max_clock (DTS) vs techo ASV confirmado (1196000) ====="
           echo "--- archivos DTS con gpu_max_clock, filtrados a 7885 explícito (no 7884) ---"
@@ -119,6 +129,7 @@ jobs:
           grep -rl "gpu_max_clock" kernel/arch/arm64/boot/dts 2>/dev/null
           echo "--- valor real de gpu_max_clock en cada candidato ---"
           grep -rn "gpu_max_clock" kernel/arch/arm64/boot/dts 2>/dev/null
+
           echo "===== GPU: gobernador DVFS del Mali (umbral de carga) ====="
           find kernel/drivers/gpu/arm -iname "*platform*" -o -iname "*dvfs*" 2>/dev/null | head -20
           grep -rln "upthreshold\|downthreshold\|utilisation\|simple_ondemand" kernel/drivers/gpu/arm 2>/dev/null | head -10
@@ -126,62 +137,6 @@ jobs:
           grep -n "threshold\|utilization\|load\s*[<>]\|#define.*UP\|#define.*DOWN" kernel/drivers/gpu/arm/tMIx/r10p0/platform/exynos/gpu_dvfs_governor.c 2>/dev/null | head -40
           echo "--- ¿otras versiones de driver además de r10p0/r3p0? ---"
           find kernel/drivers/gpu/arm -maxdepth 2 -type d 2>/dev/null
-        continue-on-error: true
-
-      # ============================================================
-      # 1c. DIAGNÓSTICO (no bloqueante): valores REALES de los arrays
-      #     lowmem_adj[]/lowmem_minfree[] del LMK (no solo su ubicación,
-      #     ya confirmada en corrida anterior: drivers/staging/android/
-      #     lowmemorykiller.c, lowmem_minfree_size=4). Sin esto, cualquier
-      #     minfree propuesto sería adivinar sobre 4 niveles de los que no
-      #     conocemos ni los KB ni el oom_adj real de cada uno.
-      #     También repite el grep de "low_latency" en BFQ pero DESPUÉS
-      #     de portarlo del donante (el step 1b corría ANTES de que el
-      #     archivo existiera en el árbol, por eso salió vacío el 2026-09-14).
-      # ============================================================
-
-      - name: Diagnose real LMK minfree/adj arrays and BFQ low_latency (post-donor)
-        run: |
-          echo "===== LMK: contenido real de los arrays default (kernel propio) ====="
-          grep -n -B2 -A20 "static.*lowmem_adj\[\]\|static.*lowmem_minfree\[\]\|lowmem_adj\[6\]\|lowmem_minfree\[6\]\|lowmem_adj\[4\]\|lowmem_minfree\[4\]" kernel/drivers/staging/android/lowmemorykiller.c 2>/dev/null || echo "(sin coincidencias con esos patrones - probar con menos contexto abajo)"
-          echo "--- fallback: cualquier línea con 'lowmem_adj' o 'lowmem_minfree' (declaración o uso) ---"
-          grep -n "lowmem_adj\|lowmem_minfree" kernel/drivers/staging/android/lowmemorykiller.c 2>/dev/null
-          echo "--- valores por defecto en runtime (module_param_array), si vienen seteados en el mismo archivo ---"
-          grep -n -B2 -A5 "module_param_array_named" kernel/drivers/staging/android/lowmemorykiller.c 2>/dev/null
-          echo
-          echo "===== BFQ low_latency: repetido DESPUÉS del checkout, sobre el donante directo (no espera al step de port) ====="
-          grep -n -B3 -A20 "low_latency" donor/block/bfq-iosched.c 2>/dev/null || echo "(sin coincidencias en donor/block/bfq-iosched.c - confirmar ruta real)"
-        continue-on-error: true
-
-      # ============================================================
-      # 1d. DIAGNÓSTICO (no bloqueante): estado real de F2FS - qué está
-      #     compilado hoy (defconfig propio) vs qué opciones existen en
-      #     el Kconfig del propio árbol (compiladas o no) vs qué trae el
-      #     donante (por si ya backporteó algo más nuevo, mismo patrón
-      #     que se usó para BFQ/WireGuard). Kernel 4.4.302 es de una era
-      #     de F2FS sin compresión/ATGC (eso llegó en 5.x) - hay que ver
-      #     con qué versión real se trabaja antes de proponer nada.
-      # ============================================================
-
-      - name: Investigate real F2FS support (own tree vs donor)
-        run: |
-          echo "===== F2FS: opciones activas HOY en el defconfig propio ====="
-          grep -n "F2FS" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null || echo "(ninguna opción F2FS en el defconfig)"
-          echo
-          echo "===== F2FS: TODAS las opciones que existen en el Kconfig del árbol propio (compiladas o no) ====="
-          find kernel/fs/f2fs -maxdepth 1 -type f 2>/dev/null
-          grep -n "^config F2FS" kernel/fs/f2fs/Kconfig 2>/dev/null || echo "(no existe fs/f2fs/Kconfig en este árbol - F2FS podría no estar portado)"
-          echo
-          echo "===== F2FS: versión aproximada (buscar firma de features conocidas: compresión, ATGC, extent cache) ====="
-          grep -rn "F2FS_FS_COMPRESSION\|F2FS_FS_LZ4\|F2FS_FS_ZSTD\|COMPRESS_EXT" kernel/fs/f2fs/Kconfig 2>/dev/null || echo "(sin soporte de compresión visible - esperado en un backport 4.4)"
-          grep -rln "extent_cache\|f2fs_extent" kernel/fs/f2fs 2>/dev/null | head -5
-          echo
-          echo "===== F2FS: mismo chequeo contra el donante (¿trae algo más nuevo para portar?) ====="
-          find donor/fs/f2fs -maxdepth 1 -type f 2>/dev/null || echo "(el donante no trae fs/f2fs en absoluto)"
-          grep -n "F2FS" donor/arch/arm64/configs/*defconfig* 2>/dev/null | head -40
-          echo
-          echo "===== F2FS: sysfs tunables ya existentes en el driver propio (para tuning en runtime, no Kconfig) ====="
-          grep -rln "f2fs_attr\|F2FS_RW_ATTR\|F2FS_GENERAL_RO_ATTR" kernel/fs/f2fs 2>/dev/null
         continue-on-error: true
 
       # ============================================================
@@ -201,6 +156,7 @@ jobs:
             git-core \
             zip \
             gcc-arm-linux-gnueabi
+
       # ============================================================
       # 3. FIXES BASE (obligatorios)
       # ============================================================
@@ -211,18 +167,21 @@ jobs:
           sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' \
             drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
           grep -n "^const unsigned long decon_clocks_table" drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
+
       - name: Fix topology.c warning
         working-directory: kernel
         run: |
           sed -i 's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' \
             arch/arm64/kernel/topology.c
           grep -n "strlen(CONFIG_HMP_FAST_CPU_MASK)" arch/arm64/kernel/topology.c
+
       - name: Fix nl80211 country_code
         working-directory: kernel
         run: |
           sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' \
             drivers/net/wireless/scsc/nl80211_vendor.c
           grep -n "char country_code\[SLSI_COUNTRY_CODE_LEN\]" drivers/net/wireless/scsc/nl80211_vendor.c
+
       # ============================================================
       # 4. FIX sched/tune.h
       # ============================================================
@@ -244,6 +203,7 @@ jobs:
           fi
           grep -n "struct cpufreq_policy;" kernel/sched/tune.h
           grep -n "struct freqvar_boost_data;" kernel/sched/tune.h
+
       # ============================================================
       # 5. TCP CUBIC (fix: selección de choice)
       # ============================================================
@@ -259,6 +219,7 @@ jobs:
           # Seleccionar cubic en la choice
           echo "CONFIG_DEFAULT_CUBIC=y" >> "$DEFCONFIG"
           grep -n "CONFIG_DEFAULT_CUBIC\|CONFIG_TCP_CONG_CUBIC" "$DEFCONFIG"
+
       # ============================================================
       # 6. SCHEDUTIL (compilado + gobernador por defecto)
       # ============================================================
@@ -270,21 +231,22 @@ jobs:
           # Habilitar schedutil
           if grep -q "^# CONFIG_CPU_FREQ_GOV_SCHEDUTIL is not set" "$DEFCONFIG"; then
             sed -i 's/# CONFIG_CPU_FREQ_GOV_SCHEDUTIL is not set/CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y/' "$DEFCONFIG"
-          else
+          elif ! grep -q "^CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" "$DEFCONFIG"; then
             echo "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" >> "$DEFCONFIG"
           fi
           grep -q "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" "$DEFCONFIG" || { echo "ERROR: schedutil no activado"; exit 1; }
           # Activar FREQVAR_SCHEDTUNE (necesario para cpufreq_schedutil.c)
           if grep -q "^# CONFIG_FREQVAR_SCHEDTUNE is not set" "$DEFCONFIG"; then
             sed -i 's/# CONFIG_FREQVAR_SCHEDTUNE is not set/CONFIG_FREQVAR_SCHEDTUNE=y/' "$DEFCONFIG"
-          else
+          elif ! grep -q "^CONFIG_FREQVAR_SCHEDTUNE=y" "$DEFCONFIG"; then
             echo "CONFIG_FREQVAR_SCHEDTUNE=y" >> "$DEFCONFIG"
           fi
           grep -q "CONFIG_FREQVAR_SCHEDTUNE=y" "$DEFCONFIG" || { echo "ERROR: FREQVAR_SCHEDTUNE no activado"; exit 1; }
           # Hacer schedutil el gobernador por defecto (quitar interactive)
           sed -i '/^CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE/d;/^CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE/d;/^CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND/d;/^CONFIG_CPU_FREQ_DEFAULT_GOV_CONSERVATIVE/d;/^CONFIG_CPU_FREQ_DEFAULT_GOV_POWERSAVE/d;/^CONFIG_CPU_FREQ_DEFAULT_GOV_USERSPACE/d' "$DEFCONFIG"
-          echo "CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y" >> "$DEFCONFIG"
+          grep -q "^CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y" "$DEFCONFIG" || echo "CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y" >> "$DEFCONFIG"
           grep -n "CONFIG_CPU_FREQ_DEFAULT_GOV" "$DEFCONFIG"
+
       # ============================================================
       # 7. Fix arch_scale_freq_invariant (necesario para schedutil en 4.4)
       # ============================================================
@@ -302,6 +264,7 @@ jobs:
             sed -i '/^#include "sched.h"/a #ifndef arch_scale_freq_invariant\n#define arch_scale_freq_invariant() false\n#endif' "$FILE"
           fi
           grep -q "^#define arch_scale_freq_invariant" "$FILE" || { echo "ERROR: no se añadió arch_scale_freq_invariant"; exit 1; }
+
       # ============================================================
       # 7a1. FREQVAR_SCHEDTUNE: cpufreq_schedutil.c ya llama a
       #      schedtune_freqvar_boost_init/exit() SIN ifdef (confirmado por
@@ -326,6 +289,7 @@ jobs:
             grep -q "^CONFIG_FREQVAR_SCHEDTUNE=y" "$DEFCONFIG" || echo "CONFIG_FREQVAR_SCHEDTUNE=y" >> "$DEFCONFIG"
           fi
           grep -n "CONFIG_FREQVAR_SCHEDTUNE" "$DEFCONFIG" || echo "AVISO: símbolo no encontrado tras el intento - puede no existir en este árbol, revisar log de compilación"
+
       # ============================================================
       # 7a2. Thermal: trip points escribibles en runtime (confirmado que
       #      vienen del device tree, symbol estándar de Linux, bajo riesgo)
@@ -342,6 +306,7 @@ jobs:
           fi
           grep -q "CONFIG_THERMAL_WRITABLE_TRIPS=y" "$DEFCONFIG" || { echo "ERROR: THERMAL_WRITABLE_TRIPS no activado"; exit 1; }
           grep -n "CONFIG_THERMAL_WRITABLE_TRIPS" "$DEFCONFIG"
+
       # ============================================================
       # 7a3. Transparent Huge Pages: activar (estaba completamente
       #      deshabilitado, symbol estándar de Linux, bajo riesgo)
@@ -364,6 +329,7 @@ jobs:
           sed -i '/^CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS/d' "$DEFCONFIG"
           echo "CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y" >> "$DEFCONFIG"
           grep -n "CONFIG_TRANSPARENT_HUGEPAGE" "$DEFCONFIG"
+
       # ============================================================
       # 7a4. FIX CRÍTICO: bug real en fs/proc/task_mmu.c, nunca antes
       #      compilado con THP siempre desactivado (hallazgo cruzado con
@@ -386,6 +352,7 @@ jobs:
           fi
           sed -i 's/split_huge_page_pmd(vma, pmd, addr);/split_huge_page_pmd(vma, addr, pmd);/' "$FILE"
           grep -n "split_huge_page_pmd(vma, addr, pmd);" "$FILE" || { echo "ERROR: no se aplicó el fix"; exit 1; }
+
       # ============================================================
       # 7b. fq qdisc (símbolo ya existente en este árbol 4.4, confirmado
       #     por build anterior - CONFIG_NET_SCH_FQ=y en línea 998)
@@ -402,6 +369,7 @@ jobs:
           fi
           grep -q "CONFIG_NET_SCH_FQ=y" "$DEFCONFIG" || { echo "ERROR: fq qdisc no activado"; exit 1; }
           grep -n "CONFIG_NET_SCH_FQ" "$DEFCONFIG"
+
       # ============================================================
       # 7b2. TCP BBR - PORT CONDICIONAL desde el donante
       #      BBR llegó al kernel mainline en Linux 4.9 (net/ipv4/tcp_bbr.c),
@@ -416,11 +384,14 @@ jobs:
           if [ -f ../donor/net/ipv4/tcp_bbr.c ]; then
             echo "tcp_bbr.c encontrado en el donante -> portando"
             cp -v ../donor/net/ipv4/tcp_bbr.c net/ipv4/tcp_bbr.c
+
             if ! grep -q "^config TCP_CONG_BBR" net/ipv4/Kconfig; then
               printf '\nconfig TCP_CONG_BBR\n\ttristate "BBR TCP"\n\tdefault n\n\t---help---\n\t  TCP BBR congestion control, portado desde el kernel donante.\n' >> net/ipv4/Kconfig
             fi
+
             grep -q "tcp_bbr.o" net/ipv4/Makefile || \
               echo 'obj-$(CONFIG_TCP_CONG_BBR) += tcp_bbr.o' >> net/ipv4/Makefile
+
             DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
             grep -q "^CONFIG_TCP_CONG_BBR=y" "$DEFCONFIG" || echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
             echo "BBR_STATUS=ported" >> "$GITHUB_ENV"
@@ -429,6 +400,7 @@ jobs:
             echo "Este árbol es Linux 4.4 (BBR es de mainline 4.9+) - se omite BBR, se mantiene cubic+fq."
             echo "BBR_STATUS=unavailable" >> "$GITHUB_ENV"
           fi
+
       # ============================================================
       # 7c. KSM (Kernel Samepage Merging) - dedup de páginas de memoria
       # ============================================================
@@ -444,63 +416,11 @@ jobs:
           fi
           grep -q "CONFIG_KSM=y" "$DEFCONFIG" || { echo "ERROR: KSM no activado"; exit 1; }
           grep -n "CONFIG_KSM" "$DEFCONFIG"
-      # ============================================================
-      # 8b. UKSM - reemplazo de KSM con deduplicacion mas agresiva
-      # Step aislado a proposito: si algo de esto falla, queremos que
-      # falle aca mismo (con diagnostico claro) y no a mitad de la
-      # compilacion general. Repetir esta corrida en un runner limpio
-      # antes de confiar en el resultado si el runner se queda sin
-      # espacio en disco (REGLA 10 del contexto del proyecto).
-      # ============================================================
-
-      - name: Apply UKSM patch (isolated, verify before trusting on low disk space)
-        working-directory: kernel
-        run: |
-          echo "DESACTIVADO TEMPORALMENTE 2026-09-13 - decision consciente, no bloqueo tecnico."
-          echo "Se prioriza dejar TTL/HL y USB fast charge en produccion sin arrastrar el"
-          echo "riesgo de UKSM. Retomar cuando haya tiempo dedicado aparte (ver inventario)."
-          echo "skip"
-      # ============================================================
-      # INVENTARIO REAL PARA RETOMAR UKSM (no borrar este bloque)
-      # ============================================================
-      # Confirmado esta sesion: el hook de mm/mmap.c (vma_adjust) SI
-      # matchea y aplica limpio contra el texto real de este arbol
-      # (vm_end_gap(vma), post backport "larger stack guard gap").
-      # Pero compilar reveló que faltan piezas mas grandes de lo asumido:
-      #
-      #   - include/linux/uksm.h NO EXISTE en este arbol - hay que
-      #     crearlo completo (149 lineas, contenido real ya extraido de
-      #     uksm-4.9.patch en esta sesion). Sin esto, "uksm_vma_add_new"
-      #     no tiene declaracion visible (implicit-function-declaration).
-      #   - include/linux/mm_types.h necesita el campo nuevo
-      #     "uksm_vma_slot" en struct vm_area_struct (usado por
-      #     uksm_cow_page/uksm_cow_pte dentro del header de arriba).
-      #   - kernel/fork.c (dup_mmap) necesita su propio hook
-      #     uksm_vma_add_new(tmp), ademas del include del header.
-      #   - mm/mmap.c necesita el #include <linux/uksm.h> (hoy no lo
-      #     incluye en absoluto).
-      #
-      # El patch real completo (dolohow/uksm, v4.x/uksm-4.9.patch, el mas
-      # cercano probado contra este arbol 4.4.302) toca 19 archivos:
-      #   Documentation/vm/00-INDEX, Documentation/vm/uksm.txt, fs/exec.c,
-      #   fs/proc/meminfo.c, include/asm-generic/pgtable.h,
-      #   include/linux/ksm.h, include/linux/mm_types.h,
-      #   include/linux/mmzone.h, include/linux/sradix-tree.h (nuevo),
-      #   include/linux/uksm.h (nuevo), kernel/fork.c, lib/Makefile,
-      #   lib/sradix-tree.c (nuevo), mm/Kconfig, mm/Makefile, mm/memory.c,
-      #   mm/mmap.c, mm/rmap.c, mm/uksm.c (nuevo, ~5586 lineas - el
-      #   algoritmo completo), mm/vmstat.c.
-      #
-      # Ninguno de estos 19 (salvo el hook de mmap.c ya confirmado) se ha
-      # verificado contra el texto real de este arbol todavia. Retomar
-      # significa ir hunk por hunk, igual que se hizo con mmap.c, antes
-      # de asumir que alguno aplica tal cual.
 
       # ============================================================
-      # Diagnostico puro (no bloqueante, no adivina): texto REAL de la
-      # zona de vma_adjust() que los 2 intentos de UKSM no pudieron
-      # matchear. Sin esto, un tercer intento seria la misma apuesta que
-      # ya fallo 2 veces.
+      # 8b-0. Diagnóstico previo al UKSM (no bloqueante). Corre ANTES
+      #       del apply para que si el apply falla, tengamos la foto
+      #       real del archivo sin los hooks ya insertados.
       # ============================================================
 
       - name: Diagnose real content of vma_adjust() for UKSM (non-fatal)
@@ -517,6 +437,134 @@ jobs:
           echo
           echo "===== version exacta de este kernel (para descartar backport por fecha) ====="
           grep -n "^VERSION\|^PATCHLEVEL\|^SUBLEVEL" Makefile | head -3
+
+      # ============================================================
+      # 8b. UKSM - reemplazo de KSM con deduplicacion mas agresiva
+      #
+      # Step aislado a proposito (Regla 10): si falla, queremos que
+      # falle aca con diagnostico completo y NO a mitad de "Compile".
+      #
+      # DEUDA CONOCIDA (documentada, no bloquea build):
+      #   El hunk que insertaba uksm_remove_vma(next) en la rama
+      #   remove_next==2 de vma_adjust NO se aplica porque el contexto
+      #   asumido por el patch ("end = next->vm_end;") no existe en
+      #   este arbol post-refactor. Sin ese hook, UKSM puede mantener
+      #   referencias a VMAs eliminados (leak lento). Aceptado como
+      #   deuda consciente para la primera prueba; retomar si aparecen
+      #   sintomas de leak prolongado.
+      # ============================================================
+
+      - name: Apply UKSM patch (verbose, hard-fail on unexpected state)
+        working-directory: kernel
+        run: |
+          set -u
+          PATCH_FILE=/tmp/uksm-4.4.patch
+          URL="https://raw.githubusercontent.com/dolohow/uksm/master/v4.x/uksm-4.4.patch"
+
+          echo "===== 1. Descarga del patch ====="
+          curl -sL "$URL" -o "$PATCH_FILE"
+          [ -s "$PATCH_FILE" ] || { echo "ERROR: descarga vacia o fallida"; exit 1; }
+          echo "Lineas: $(wc -l < $PATCH_FILE)"
+          echo "Archivos que toca: $(grep -c '^diff --git' $PATCH_FILE)"
+
+          echo
+          echo "===== 2. Dry-run (informativo, no aplica) ====="
+          patch -p1 --dry-run --fuzz=3 < "$PATCH_FILE" 2>&1 | tee /tmp/uksm-dryrun.log || true
+          echo "patching file: $(grep -c '^patching file' /tmp/uksm-dryrun.log || true)"
+          echo "FAILED:        $(grep -c 'FAILED' /tmp/uksm-dryrun.log || true)"
+          echo "--- Archivos con FAILED ---"
+          grep 'FAILED' /tmp/uksm-dryrun.log | sed 's/:.*//' | sort -u || echo "(ninguno)"
+
+          echo
+          echo "===== 3. Aplicacion real (--fuzz=3) ====="
+          patch -p1 --fuzz=3 < "$PATCH_FILE" > /tmp/uksm-patch.log 2>&1 || true
+          cat /tmp/uksm-patch.log
+
+          echo
+          echo "===== 4. .rej generados ====="
+          find . -name '*.rej' -type f > /tmp/rej-list.txt
+          cat /tmp/rej-list.txt
+          UNEXPECTED=$(grep -v '^./mm/mmap.c.rej$' /tmp/rej-list.txt | grep -v '^$' || true)
+          if [ -n "$UNEXPECTED" ]; then
+            echo "ERROR FATAL: .rej en archivos inesperados:"
+            echo "$UNEXPECTED"
+            for r in $UNEXPECTED; do
+              echo "### $r ###"
+              cat "$r"
+              echo
+            done
+            exit 1
+          fi
+
+          echo
+          echo "===== 5. Verificar archivos NUEVOS que el patch DEBE crear ====="
+          for f in include/linux/uksm.h include/linux/sradix-tree.h lib/sradix-tree.c mm/uksm.c; do
+            [ -f "$f" ] || { echo "ERROR FATAL: $f no existe - patch incompleto, compilar es imposible"; exit 1; }
+            echo "OK: $f ($(wc -l < $f) lineas)"
+          done
+
+          echo
+          echo "===== 6. Hook en mm/mmap.c ====="
+          HAS_HOOK=$(grep -c 'uksm_vma_add_new' mm/mmap.c || true)
+          echo "Ocurrencias uksm_vma_add_new: $HAS_HOOK"
+          if [ -f mm/mmap.c.rej ]; then
+            echo "mmap.c.rej presente - el hunk de vma_adjust no aplico. Aplicando fix manual."
+            [ "$HAS_HOOK" = "0" ] || { echo "ERROR: .rej presente PERO hook ya presente - estado parcial inesperado"; cat mm/mmap.c.rej; exit 1; }
+            cat > /tmp/fix_mmap.py <<'PYEOF'
+          import sys
+          path = sys.argv[1]
+          OLD = '\t\telse\n\t\t\tVM_WARN_ON(mm->highest_vm_end != vm_end_gap(vma));\n\t}\n\tif (insert && file)\n\t\tuprobe_mmap(insert);\n\n\tvalidate_mm(mm);'
+          NEW = '\t\telse\n\t\t\tVM_WARN_ON(mm->highest_vm_end != vm_end_gap(vma));\n\t} else {\n\t\tif (next && !insert)\n\t\t\tuksm_vma_add_new(next);\n\t}\n\tif (insert && file)\n\t\tuprobe_mmap(insert);\n\n\tuksm_vma_add_new(vma);\n\tvalidate_mm(mm);'
+          with open(path, 'r') as f:
+              content = f.read()
+          count = content.count(OLD)
+          if count != 1:
+              print(f"ERROR: anchor encontrado {count} veces (esperado 1). Abortando sin modificar.")
+              sys.exit(1)
+          with open(path, 'w') as f:
+              f.write(content.replace(OLD, NEW, 1))
+          print("OK: hook vma_adjust insertado.")
+          PYEOF
+            python3 /tmp/fix_mmap.py mm/mmap.c
+            grep -q 'uksm_vma_add_new(vma);' mm/mmap.c || { echo "ERROR: fix manual fallo"; exit 1; }
+            grep -q 'uksm_vma_add_new(next);' mm/mmap.c || { echo "ERROR: fix manual no inserto branch next"; exit 1; }
+            rm -f mm/mmap.c.rej
+            echo "Fix manual aplicado, .rej limpiado."
+          fi
+
+          echo
+          echo "===== 7. Fix portabilidad: const en is_full_zero() ====="
+          if grep -q '^\tunsigned long \*src = s1;$' mm/uksm.c; then
+            sed -i 's/^\tunsigned long \*src = s1;$/\tconst unsigned long *src = s1;/' mm/uksm.c
+          fi
+          grep -q 'const unsigned long \*src = s1' mm/uksm.c || { echo "ERROR: no se pudo aplicar fix const"; grep -n 'src = s1' mm/uksm.c; exit 1; }
+          echo "OK"
+
+          echo
+          echo "===== 8. Asegurar #include <linux/uksm.h> en mm/mmap.c ====="
+          if ! grep -q '#include <linux/uksm.h>' mm/mmap.c; then
+            awk 'BEGIN{done=0} /^#include <linux\/mm\.h>/{if(!done){print; print "#include <linux/uksm.h>"; done=1; next}} {print}' mm/mmap.c > /tmp/mmap.c.tmp && mv /tmp/mmap.c.tmp mm/mmap.c
+          fi
+          grep -q '#include <linux/uksm.h>' mm/mmap.c || { echo "ERROR: no se pudo insertar include"; exit 1; }
+          echo "OK"
+
+          echo
+          echo "===== 9. Activar CONFIG_UKSM en defconfig ====="
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          grep -q '^CONFIG_KSM=y' "$DEFCONFIG" || echo "CONFIG_KSM=y" >> "$DEFCONFIG"
+          sed -i '/^CONFIG_KSM_LEGACY=y/d' "$DEFCONFIG"
+          if grep -q '^# CONFIG_UKSM is not set' "$DEFCONFIG"; then
+            sed -i 's/^# CONFIG_UKSM is not set/CONFIG_UKSM=y/' "$DEFCONFIG"
+          else
+            grep -q '^CONFIG_UKSM=y' "$DEFCONFIG" || echo "CONFIG_UKSM=y" >> "$DEFCONFIG"
+          fi
+          grep -n 'CONFIG_UKSM\|CONFIG_KSM' "$DEFCONFIG"
+
+          echo
+          echo "===== 10. Resumen ====="
+          echo ".rej residuales: $(find . -name '*.rej' | wc -l) (deberia ser 0)"
+          echo "CONFIG_UKSM en defconfig: $(grep '^CONFIG_UKSM' $DEFCONFIG)"
+
       # ============================================================
       # 8c. TTL/HL spoofing (netfilter xt_HL) - ya verificado en clon de
       # prueba, esto lo lleva al workflow de produccion.
@@ -533,8 +581,9 @@ jobs:
           fi
           grep -q "CONFIG_NETFILTER_XT_TARGET_HL=y" "$DEFCONFIG" || { echo "ERROR: TTL/HL no activado"; exit 1; }
           grep -n "CONFIG_NETFILTER_XT_TARGET_HL" "$DEFCONFIG"
+
       # ============================================================
-      # 8b. USB Fast Charge - separar cable_number=4 (USB, SEC_BATTERY_
+      # 8d. USB Fast Charge - separar cable_number=4 (USB, SEC_BATTERY_
       # CABLE_USB) de current_group_1 en su propio grupo, subiendo SOLO
       # ese cable de 500mA a 900mA (punto de partida moderado, confirmado
       # con el usuario - hay margen fisico: default_charging_current del
@@ -558,8 +607,10 @@ jobs:
           fi
           echo "Archivo encontrado: $F"
           cp "$F" "$F.orig"
+
           # 1. Sacar el cable 4 (USB) del grupo original
           sed -i 's/cable_number = <1 4 19 21 22 23 30>;/cable_number = <1 19 21 22 23 30>;/' "$F"
+
           # 2. Insertar un grupo nuevo solo para USB, justo despues del
           # cierre de current_group_11 (el ultimo grupo existente), con
           # la misma indentacion real del archivo (tabs: 2 para el grupo,
@@ -577,6 +628,7 @@ jobs:
               in_block = 0
             }
           ' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
+
           # 3. Verificacion (Regla 8): exactamente 1 coincidencia de cada
           # cambio, y el resto del archivo intacto salvo estas 2 ediciones.
           [ "$(grep -c 'cable_number = <1 19 21 22 23 30>;' "$F")" = "1" ] || { echo "ERROR: grupo original no quedo como se esperaba"; diff "$F.orig" "$F"; exit 1; }
@@ -588,143 +640,14 @@ jobs:
           for cn in "cable_number = <2 25>;" "cable_number = <5>;" "cable_number = <6 7 8>;" "cable_number = <9>;" "cable_number = <10 12 14 15 27>;" "cable_number = <13>;" "cable_number = <24>;" "cable_number = <26>;" "cable_number = <11 16 28>;" "cable_number = <29>;"; do
             grep -qF "$cn" "$F" || { echo "ERROR: un grupo existente cambio inesperadamente ($cn)"; diff "$F.orig" "$F"; exit 1; }
           done
+
           echo "--- Diff completo aplicado ---"
           diff "$F.orig" "$F" || true
           rm "$F.orig"
 
       # ============================================================
-      # 8a. DIAGNOSTICO: estructura real para insertar nodos
-      #     freqvar-boost (schedtune-freqvar). NO inserta nada todavia -
-      #     solo confirma el archivo y el punto de insercion seguro antes
-      #     de tocar sintaxis DTS (el compilador dtc es estricto, un nodo
-      #     mal anidado rompe la compilacion).
+      # 8e. ZRAM: activar lz4 (zstd no soportado en este kernel 4.4)
       # ============================================================
-
-      - name: Diagnose real DT structure for freqvar-boost node insertion (non-fatal)
-        working-directory: kernel
-        continue-on-error: true
-        run: |
-          echo "===== 1. ¿Dónde vive el nodo 'cpus {' de verdad? ====="
-          grep -rn "cpus {" arch/arm64/boot/dts/exynos/*.dtsi arch/arm64/boot/dts/exynos/*.dts 2>/dev/null
-
-          echo
-          echo "===== 2. Contexto completo alrededor de cpu7 (BIG) y su cierre ====="
-          F_CPUS=$(grep -rl "compatible = \"arm,cortex-a73\"" arch/arm64/boot/dts/exynos/*.dtsi arch/arm64/boot/dts/exynos/*.dts 2>/dev/null | head -1)
-          echo "Archivo: $F_CPUS"
-          if [ -n "$F_CPUS" ]; then
-            grep -n "cpu7\|cortex-a73" "$F_CPUS"
-            echo "--- 40 líneas después de la última referencia a cpu7 ---"
-            LINE=$(grep -n "cortex-a73" "$F_CPUS" | tail -1 | cut -d: -f1)
-            sed -n "${LINE},$((LINE+40))p" "$F_CPUS" | cat -n
-          fi
-
-          echo
-          echo "===== 3. ¿Ya existe algún nodo 'schedtune-freqvar' o 'device_type = \"cpufreq-domain\"' como referencia de formato? ====="
-          grep -rn "schedtune-freqvar\|device_type = \"cpufreq-domain\"" arch/arm64/boot/dts/exynos/*.dtsi arch/arm64/boot/dts/exynos/*.dts 2>/dev/null | head -10
-
-          echo
-          echo "===== 4. Confirmar que el archivo del USB fast charge (cable_number) es o no el mismo que el de cpus ====="
-          F_USB=$(grep -rl "cable_number = <1 4 19 21 22 23 30>;\|cable_number = <1 19 21 22 23 30>;" arch/arm64/boot/dts/exynos/*.dtsi arch/arm64/boot/dts/exynos/*.dts 2>/dev/null | grep "a7y18lte")
-          echo "Archivo USB: $F_USB"
-          echo "¿Es el mismo que el de cpus?: $([ "$F_USB" = "$F_CPUS" ] && echo SI || echo NO)"
-
-      # ============================================================
-      # 8a2. Insertar los 2 nodos freqvar-boost (schedtune-freqvar).
-      # CONFIG_FREQVAR_SCHEDTUNE ya estaba activo pero inerte (sin nodo DT
-      # que of_find_node_by_type() pudiera encontrar). Formato confirmado
-      # contra kernel/sched/tune.c (schedtune_freqvar_find_node/
-      # schedtune_freqvar_parse_dt): device_type="schedtune-freqvar",
-      # shared-cpus=<cpulist string>, table=<pares ratio/freq descendentes
-      # terminados en un ratio final sin freq>. Punto de inserción
-      # confirmado por el step de diagnóstico anterior: 'cpus {}' y
-      # 'cpufreq { domain@0 {}; domain@1 {}; }' son nodos hermanos al
-      # mismo nivel, y 'cpufreq' cierra justo antes de 'psci {' (única
-      # ocurrencia en el archivo, confirmado). Clusters: domain@0
-      # (sibling-cpus "0-5") = LITTLE Cortex-A53, domain@1 (sibling-cpus
-      # "6-7") = BIG Cortex-A73 - mismo formato de cpulist ya usado por el
-      # nodo 'cpufreq-userctrl' existente, confirmación cruzada. Tabla
-      # agresiva a propósito (testeo de rendimiento máximo, no un punto
-      # medio conservador).
-      # ============================================================
-
-      - name: Insert freqvar-boost DT nodes (schedtune-freqvar)
-        working-directory: kernel
-        run: |
-          F=arch/arm64/boot/dts/exynos/exynos7885.dtsi
-          if [ ! -f "$F" ]; then
-            echo "ERROR: no se encontró $F"
-            exit 1
-          fi
-          cp "$F" "$F.orig"
-
-          perl -0777 -pi -e 's/(\n\tpsci \{\n)/\n\tfreqvar_boost_little: freqvar-boost-little {\n\t\tdevice_type = "schedtune-freqvar";\n\t\tshared-cpus = "0-5";\n\t\ttable = <40 676000 30 1014000 20 1352000 10 1690000 0>;\n\t};\n\n\tfreqvar_boost_big: freqvar-boost-big {\n\t\tdevice_type = "schedtune-freqvar";\n\t\tshared-cpus = "6-7";\n\t\ttable = <40 1352000 30 1664000 20 1976000 10 2184000 0>;\n\t};\n$1/' "$F"
-
-          [ "$(grep -c 'device_type = "schedtune-freqvar"' "$F")" = "2" ] || { echo "ERROR: no se insertaron los 2 nodos"; diff "$F.orig" "$F"; exit 1; }
-          [ "$(grep -c 'shared-cpus = "0-5"' "$F")" -ge "1" ] || { echo "ERROR: nodo LITTLE no matcheó"; exit 1; }
-          [ "$(grep -c 'shared-cpus = "6-7"' "$F")" -ge "1" ] || { echo "ERROR: nodo BIG no matcheó"; exit 1; }
-          echo "--- Diff completo aplicado ---"
-          diff "$F.orig" "$F" || true
-          rm "$F.orig"
-
-      # ============================================================
-      # 8a3. OC CPU opt-in vía parámetro de arranque (cpu_max_c1/c2).
-      # Origen: c26f9bdbd + cb423f5a1 de un kernel de terceros para este
-      # mismo dispositivo (ver OC_PORTING_CONTEXT.md / PORTING_CONTEXT.md).
-      # Mapeo domain->id confirmado en ESTE arbol (no asumido del origen):
-      # domain@0 (sibling-cpus "0-5") = LITTLE Cortex-A53 -> cpu_max_c1
-      # domain@1 (sibling-cpus "6-7") = BIG Cortex-A73    -> cpu_max_c2
-      # (mismo mapeo que el kernel origen, coincidencia confirmada, no
-      # asumida - ver step "Insert freqvar-boost DT nodes" arriba).
-      #
-      # DIFERENCIA DE DISEÑO A PROPOSITO respecto al kernel origen: alli
-      # arg_cpu_max_c1/c2 vienen hardcodeados a 1690000/2184000 (el OC
-      # esta activo por defecto, el parametro de boot es para bajarlo).
-      # Aca se invierte: default = 0 = SIN CAMBIOS (domain->max_freq queda
-      # exactamente como lo calcula CAL/DT, igual que sin este patch). El
-      # OC solo se activa si se agrega explicitamente cpu_max_c1=<khz> o
-      # cpu_max_c2=<khz> a la cmdline del kernel - opt-in, no opt-out,
-      # consistente con la politica de "cero overclock por defecto" del
-      # resto de este proyecto. Compilar esto NO cambia nada en el
-      # telefono hasta que se edite la cmdline a proposito.
-      # ============================================================
-
-      - name: Add CPU OC opt-in (cpu_max_c1/c2 boot params, default = no-op)
-        working-directory: kernel
-        run: |
-          F=drivers/cpufreq/exynos-acme.c
-          if [ ! -f "$F" ]; then
-            echo "ERROR: no se encontró $F"
-            exit 1
-          fi
-          cp "$F" "$F.orig"
-
-          ANCHOR_FUNC='static __init int init_domain(struct exynos_cpufreq_domain *domain,'
-          grep -qF "$ANCHOR_FUNC" "$F" || { echo "ERROR: no se encontró init_domain() - revisar a mano"; exit 1; }
-
-          # 1. Insertar el parser + variables globales justo antes de init_domain()
-          perl -0777 -pi -e 's|(static __init int init_domain\(struct exynos_cpufreq_domain \*domain,)|/*\n * OC opt-in (ver comentario del workflow). Default 0 = sin cambios.\n */\nstatic unsigned long arg_cpu_max_c1;\nstatic int __init cpufreq_read_cpu_max_c1(char *str)\n{\n\tunsigned long ui_khz;\n\tint ret;\n\n\tret = kstrtoul(str, 0, \&ui_khz);\n\tif (ret)\n\t\treturn -EINVAL;\n\n\targ_cpu_max_c1 = ui_khz;\n\tpr_info("exynos-acme: cpu_max_c1=%lu (override LITTLE domain max_freq)\\n", arg_cpu_max_c1);\n\treturn 0;\n}\n__setup("cpu_max_c1=", cpufreq_read_cpu_max_c1);\n\nstatic unsigned long arg_cpu_max_c2;\nstatic int __init cpufreq_read_cpu_max_c2(char *str)\n{\n\tunsigned long ui_khz;\n\tint ret;\n\n\tret = kstrtoul(str, 0, \&ui_khz);\n\tif (ret)\n\t\treturn -EINVAL;\n\n\targ_cpu_max_c2 = ui_khz;\n\tpr_info("exynos-acme: cpu_max_c2=%lu (override BIG domain max_freq)\\n", arg_cpu_max_c2);\n\treturn 0;\n}\n__setup("cpu_max_c2=", cpufreq_read_cpu_max_c2);\n\n$1|' "$F"
-
-          # 2. Insertar la aplicación del override dentro de init_domain(),
-          # justo despues del clamp de min-freq (texto unico confirmado
-          # en este archivo real, con su indentacion exacta con tabs).
-          ANCHOR_MINFREQ='if (!of_property_read_u32(dn, "min-freq", \&val))\n\t\tdomain->min_freq = max(domain->min_freq, val);'
-          perl -0777 -pi -e "s|(if \(!of_property_read_u32\(dn, \"min-freq\", &val\)\)\n\t\tdomain->min_freq = max\(domain->min_freq, val\);)|\$1\n\n\t/*\n\t * OC opt-in: domain->id 0 = LITTLE (sibling-cpus 0-5), domain->id 1\n\t * = BIG (sibling-cpus 6-7) - confirmado contra exynos7885.dtsi de\n\t * este arbol. Sobreescribe max_freq SOLO si el parametro de boot\n\t * fue pasado (valor != 0); sin parametro, comportamiento identico\n\t * al stock.\n\t */\n\tif (domain->id == 0 \&\& arg_cpu_max_c1)\n\t\tdomain->max_freq = arg_cpu_max_c1;\n\telse if (domain->id == 1 \&\& arg_cpu_max_c2)\n\t\tdomain->max_freq = arg_cpu_max_c2;|" "$F"
-
-          echo "--- Verificación ---"
-          grep -q "static unsigned long arg_cpu_max_c1;" "$F" || { echo "ERROR: parser c1 no se insertó"; diff "$F.orig" "$F"; exit 1; }
-          grep -q "static unsigned long arg_cpu_max_c2;" "$F" || { echo "ERROR: parser c2 no se insertó"; diff "$F.orig" "$F"; exit 1; }
-          grep -q '__setup("cpu_max_c1=", cpufreq_read_cpu_max_c1);' "$F" || { echo "ERROR: __setup c1 no se insertó"; exit 1; }
-          grep -q '__setup("cpu_max_c2=", cpufreq_read_cpu_max_c2);' "$F" || { echo "ERROR: __setup c2 no se insertó"; exit 1; }
-          grep -q "if (domain->id == 0 && arg_cpu_max_c1)" "$F" || { echo "ERROR: override de LITTLE no se insertó"; diff "$F.orig" "$F"; exit 1; }
-          grep -q "else if (domain->id == 1 && arg_cpu_max_c2)" "$F" || { echo "ERROR: override de BIG no se insertó"; diff "$F.orig" "$F"; exit 1; }
-          # Exactamente 1 función init_domain() en el archivo - si hubiera
-          # más de una, el anclaje pudo haber insertado en el lugar
-          # equivocado o repetido.
-          [ "$(grep -cF "$ANCHOR_FUNC" "$F")" = "1" ] || { echo "ERROR: init_domain() no es único en el archivo, revisar a mano"; exit 1; }
-
-          echo "--- Diff completo aplicado (REVISAR ANTES DE CONFIAR) ---"
-          diff "$F.orig" "$F" || true
-          rm "$F.orig"
 
       - name: Enable lz4 compression for zram (zstd no compatible)
         working-directory: kernel
@@ -744,13 +667,14 @@ jobs:
             echo "CONFIG_CRYPTO_ZSTD=y" >> "$DEFCONFIG"
           fi
           grep -q "CONFIG_CRYPTO_ZSTD=y" "$DEFCONFIG" || { echo "ERROR: ZSTD no activado"; exit 1; }
+
       # ============================================================
-      # GAMING TUNING 1/2: umbrales de gpu_dvfs_table (device tree).
+      # GAMING TUNING: umbrales de gpu_dvfs_table (device tree).
       # Las 3 filas superiores (1300/1200/1100 MHz) tenían max_threshold=100
       # (prácticamente inalcanzable en gaming real) mientras el resto de la
       # tabla usa 95 - se alinean. gpu_max_clock (1100000, confirmado real,
-      # NO 1300000) y gpu_temp_throttling quedan intactos - cero overclock,
-      # solo se corrige un umbral inconsistente en filas ya existentes.
+      # gpu_max_clock y gpu_temp_throttling quedan intactos; solo se corrige
+      # un umbral inconsistente en filas ya existentes.
       # NOTA (sin resolver, revisar antes de tocar de nuevo): la fila
       # 1200000 también cambia su PRIMER valor (98->90), no solo el
       # max_threshold - el comentario original no explica ese segundo
@@ -772,9 +696,11 @@ jobs:
           F="$CANDIDATES"
           echo "Archivo encontrado (filtrado a exynos7885): $F"
           cp "$F" "$F.orig"
+
           perl -0777 -pi -e 's/1300000 98  100  1/1300000 98   95  1/' "$F"
           perl -0777 -pi -e 's/1200000 98  100  1/1200000 90   95  1/' "$F"
           perl -0777 -pi -e 's/1100000 90  100  1/1100000 90   95  1/' "$F"
+
           [ "$(grep -c '1300000 98   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1300000 no matcheó"; diff "$F.orig" "$F"; exit 1; }
           [ "$(grep -c '1200000 90   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1200000 no matcheó"; diff "$F.orig" "$F"; exit 1; }
           [ "$(grep -c '1100000 90   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1100000 no matcheó"; diff "$F.orig" "$F"; exit 1; }
@@ -785,111 +711,7 @@ jobs:
           echo "--- Diff completo aplicado ---"
           diff "$F.orig" "$F" || true
           rm "$F.orig"
-      # ============================================================
-      # GAMING TUNING 2/2: techo de boost táctil (input_booster nativo de
-      # Samsung, YA ACTIVO en drivers/input/input.c a nivel genérico de
-      # input_event() - NO requiere CONFIG_INPUT_BOOSTER, que de hecho
-      # apagaría esta rama nativa si se activara). Se sube el techo de
-      # TOUCH/MULTITOUCH de 1144000/936000 al máximo real confirmado de la
-      # BIG (2184000, el mismo valor certificado que se usó para descartar
-      # el overclock). KEY/TOUCHKEY/KEYBOARD quedan intactos.
-      # PROBADO 1 DÍA COMPLETO en uso normal sin quejas de batería/calor -
-      # aceptado tal cual. Si hace falta bajar la agresividad en el futuro,
-      # el punto medio sugerido es 1600000-1800000 en vez de 2184000.
-      # ============================================================
 
-      - name: Tune native touch input-booster ceiling for gaming
-        working-directory: kernel
-        run: |
-          F=$(grep -rl 'input_booster,label = "TOUCH"' arch/arm64/boot/dts 2>/dev/null | head -1)
-          if [ -z "$F" ]; then
-            echo "ERROR: no se encontró el archivo con el nodo input_booster TOUCH"
-            exit 1
-          fi
-          echo "Archivo encontrado: $F"
-          cp "$F" "$F.orig"
-          perl -0777 -pi -e 's/(input_booster,label = "TOUCH";.*?input_booster,cpu_freqs = <)1144000 1144000 936000(>;)/${1}2184000 2184000 2184000${2}/s' "$F"
-          perl -0777 -pi -e 's/(input_booster,label = "MULTITOUCH";.*?input_booster,cpu_freqs = <)1144000 936000(>;)/${1}2184000 2184000${2}/s' "$F"
-          grep -A12 'label = "TOUCH"' "$F" | grep -q "cpu_freqs = <2184000 2184000 2184000>;" || { echo "ERROR: TOUCH no se actualizó"; diff "$F.orig" "$F"; exit 1; }
-          grep -A12 'label = "MULTITOUCH"' "$F" | grep -q "cpu_freqs = <2184000 2184000>;" || { echo "ERROR: MULTITOUCH no se actualizó"; diff "$F.orig" "$F"; exit 1; }
-          grep -A12 'label = "KEY"' "$F" | grep -q "cpu_freqs = <1144000>;" || { echo "ERROR: KEY se tocó sin querer"; exit 1; }
-          grep -A12 'label = "TOUCHKEY"' "$F" | grep -q "cpu_freqs = <1144000>;" || { echo "ERROR: TOUCHKEY se tocó sin querer"; exit 1; }
-          echo "--- Diff completo aplicado ---"
-          diff "$F.orig" "$F" || true
-          rm "$F.orig"
-      # ============================================================
-      # 9. BFQ (copiar y hacerlo el scheduler por defecto parcheando Kconfig)
-      # ============================================================
-
-      - name: Port BFQ scheduler and set as default
-        working-directory: kernel
-        run: |
-          # Copiar archivos BFQ del donante
-          cp -v ../donor/block/bfq-*.c block/ || { echo "ERROR: No se copiaron .c de BFQ"; exit 1; }
-          cp -v ../donor/block/bfq*.h block/ 2>/dev/null || echo "No se encontraron .h en block/"
-          cp -v ../donor/include/linux/bfq*.h include/linux/ 2>/dev/null || echo "No se encontraron .h en include/linux/"
-          ls -la block/bfq-iosched.c block/bfq.h || { echo "ERROR: faltan archivos BFQ"; exit 1; }
-          # Modificar Kconfig.iosched para añadir BFQ
-          if ! grep -q "config IOSCHED_BFQ" block/Kconfig.iosched; then
-            cat >> block/Kconfig.iosched << 'EOF'
-          config IOSCHED_BFQ
-            tristate "BFQ I/O scheduler"
-            default y
-            ---help---
-              BFQ (Budget Fair Queueing) is a proportional-share I/O scheduler.
-              It provides low latency and fairness.
-          EOF
-          fi
-          # Parchear Kconfig para añadir DEFAULT_BFQ en la choice "Default I/O scheduler"
-          # (porque no existe nativamente)
-          FILE=block/Kconfig.iosched
-          if ! grep -q "config DEFAULT_BFQ" "$FILE"; then
-            sed -i '/^endchoice/i\config DEFAULT_BFQ\n\tbool "BFQ" if IOSCHED_BFQ=y\n' "$FILE"
-          fi
-          if ! grep -q 'default "bfq" if DEFAULT_BFQ' "$FILE"; then
-            sed -i '/default "noop" if DEFAULT_NOOP/a\	default "bfq" if DEFAULT_BFQ' "$FILE"
-          fi
-          grep -q "config DEFAULT_BFQ" "$FILE" || { echo "ERROR: no se añadió DEFAULT_BFQ al Kconfig"; exit 1; }
-          grep -q 'default "bfq" if DEFAULT_BFQ' "$FILE" || { echo "ERROR: no se mapeó DEFAULT_IOSCHED a bfq"; exit 1; }
-          # Makefile: solo bfq-iosched.o (bfq-cgroup.c se incluye textualmente)
-          if ! grep -q "bfq" block/Makefile; then
-            echo "obj-\$(CONFIG_IOSCHED_BFQ) += bfq-iosched.o" >> block/Makefile
-          fi
-          # Activar en defconfig y seleccionar como default
-          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
-          if grep -q "^# CONFIG_IOSCHED_BFQ is not set" "$DEFCONFIG"; then
-            sed -i 's/# CONFIG_IOSCHED_BFQ is not set/CONFIG_IOSCHED_BFQ=y/' "$DEFCONFIG"
-          else
-            echo "CONFIG_IOSCHED_BFQ=y" >> "$DEFCONFIG"
-          fi
-          grep -q "CONFIG_IOSCHED_BFQ=y" "$DEFCONFIG" || { echo "ERROR: BFQ no activado"; exit 1; }
-          # Eliminar default previo y establecer BFQ
-          sed -i '/^CONFIG_DEFAULT_DEADLINE/d;/^CONFIG_DEFAULT_CFQ/d;/^CONFIG_DEFAULT_NOOP/d;/^CONFIG_DEFAULT_IOSCHED/d' "$DEFCONFIG"
-          echo "CONFIG_DEFAULT_BFQ=y" >> "$DEFCONFIG"
-          grep -n "CONFIG_DEFAULT_BFQ\|CONFIG_DEFAULT_IOSCHED" "$DEFCONFIG" || true
-      # ============================================================
-      # 10. WIREGUARD
-      # ============================================================
-
-      - name: Port WireGuard from donor kernel
-        working-directory: kernel
-        run: |
-          mkdir -p net/wireguard
-          cp -rv ../donor/net/wireguard/* net/wireguard/ || { echo "ERROR: No se pudo copiar WireGuard"; exit 1; }
-          ls -la net/wireguard/*.c net/wireguard/*.h 2>/dev/null || { echo "ERROR: No se copió WireGuard"; exit 1; }
-          if ! grep -q "net/wireguard/Kconfig" net/Kconfig; then
-            sed -i '/^endmenu/i source "net/wireguard/Kconfig"' net/Kconfig
-          fi
-          if ! grep -q "wireguard" net/Makefile; then
-            echo "obj-\$(CONFIG_WIREGUARD) += wireguard/" >> net/Makefile
-          fi
-          if grep -q "^# CONFIG_WIREGUARD is not set" arch/arm64/configs/lineage_a7y18lte_defconfig; then
-            sed -i 's/# CONFIG_WIREGUARD is not set/CONFIG_WIREGUARD=y/' \
-              arch/arm64/configs/lineage_a7y18lte_defconfig
-          else
-            echo "CONFIG_WIREGUARD=y" >> arch/arm64/configs/lineage_a7y18lte_defconfig
-          fi
-          grep -q "CONFIG_WIREGUARD=y" arch/arm64/configs/lineage_a7y18lte_defconfig || { echo "ERROR: WireGuard no activado"; exit 1; }
       # ============================================================
       # WATCHDOG DE SALUD DEL TOUCH IC (Imagis IST40XX)
       # ============================================================
@@ -910,103 +732,29 @@ jobs:
         run: |
           F=drivers/input/touchscreen/imagis_40xx/ist40xx.c
           H=drivers/input/touchscreen/imagis_40xx/ist40xx.h
+
           if [ ! -f "$F" ] || [ ! -f "$H" ]; then
             echo "ERROR: no se encontró ist40xx.c/.h en la ruta esperada - confirmar ruta real antes de continuar"
             find kernel/drivers/input/touchscreen -iname "ist40xx*" 2>/dev/null
             exit 1
           fi
+
           perl -0777 -pi -e 's/(\tstruct delayed_work work_reset_check;\n)/$1\tstruct delayed_work work_health_check;\t\/* watchdog: IC silencioso *\/\n/' "$H"
+
           perl -0777 -pi -e 's/(\}\n\n#ifdef IST40XX_NOISE_MODE\nstatic void noise_work_func)/}\n\nstatic void health_check_work_func(struct work_struct *work)\n{\n\tstruct delayed_work *delayed_work = to_delayed_work(work);\n\tstruct ist40xx_data *data =\n\t    container_of(delayed_work, struct ist40xx_data,\n\t\t\t work_health_check);\n\tu32 hc_val;\n\tint hc_ret;\n\n\tif (unlikely((data == NULL) || (data->client == NULL)))\n\t\treturn;\n\n\tif (unlikely(!data->initialized ||\n\t\t     data->status.sys_mode == STATE_POWER_OFF ||\n\t\t     data->status.update == 1 ||\n\t\t     data->status.calib >= 1 || data->status.miscalib >= 1))\n\t\treturn;\n\n\t\/* Lectura liviana de un registro de estado, solo para confirmar que\n\t * el IC sigue respondiendo por I2C. *\/\n\tmutex_lock(&data->lock);\n\thc_ret = ist40xx_read_reg(data->client, IST40XX_HIB_TOUCH_STATUS, &hc_val);\n\tmutex_unlock(&data->lock);\n\n\tif (unlikely(hc_ret)) {\n\t\tinput_info(true, &data->client->dev,\n\t\t\t   "%s: IC no responde al health-check, forzando reset\\n",\n\t\t\t   __func__);\n\t\tist40xx_scheduled_reset(data);\n\t}\n}\n\n#ifdef IST40XX_NOISE_MODE\nstatic void noise_work_func/' "$F"
+
           perl -0pi -e 's/(\tINIT_DELAYED_WORK\(&data->work_reset_check, reset_work_func\);\n)/$1\tINIT_DELAYED_WORK(&data->work_health_check, health_check_work_func);\n/' "$F"
+
           perl -0pi -e 's/(\tcancel_delayed_work_sync\(&data->work_reset_check\);\n)/$1\tcancel_delayed_work_sync(&data->work_health_check);\n/g' "$F"
+
           perl -0777 -pi -e 's/(if \(data->irq_working \|\| !data->initialized \|\| data->rec_mode\)\n\t\tgoto restart_timer;\n\n)(\tif \(status->event_mode\) \{\n\t\tif \(likely)/$1\tif (likely(status->event_mode) \&\& status->sys_mode != STATE_POWER_OFF) {\n\t\tstatic int hc_tick;\n\t\tif (++hc_tick >= 10) {\t\/* cada ~5s (timer corre cada 500ms) *\/\n\t\t\thc_tick = 0;\n\t\t\tschedule_delayed_work(&data->work_health_check, 0);\n\t\t}\n\t}\n\n$2/' "$F"
+
           echo "--- Verificación: cada inserción debe dar exactamente el conteo esperado ---"
           [ "$(grep -c 'work_health_check' "$H")" = "1" ] || { echo "ERROR: campo del struct no se insertó (o se duplicó)"; exit 1; }
           [ "$(grep -c 'work_health_check' "$F")" = "5" ] || { echo "ERROR: conteo inesperado en ist40xx.c"; exit 1; }
           [ "$(grep -c 'health_check_work_func' "$F")" = "2" ] || { echo "ERROR: función no se insertó (o se duplicó)"; exit 1; }
           echo "OK: las 5 inserciones aplicaron exactamente una vez cada una"
-      # ============================================================
-      # RENDIMIENTO SIN OC 1/N: LMK - expandir de 4 a los 6 niveles reales
-      # que el array ya soporta (declarado [6], pero lowmem_adj_size/
-      # lowmem_minfree_size quedaban en 4 - los últimos 2 slots existían
-      # en el binario pero nunca se usaban). Confirmado con valores reales
-      # del log del CI (run #21, 2026-09-14): adj={0,1,6,12},
-      # minfree={6,8,16,64}MB. Se mantienen los 4 adj originales tal cual
-      # (no se inventan), se les da más margen, y se insertan 2 niveles
-      # nuevos en la posición correcta (9 entre 6 y 12, 15 como techo real
-      # tipo EMPTY_APP) para que el sistema deje de matar background con
-      # apenas 64MB libres en un equipo de 4GB. Aritmética verificada:
-      # unidades del driver = páginas de 4KB (3*1024=3072 pág=12MB, etc).
-      # ============================================================
 
-      - name: Tune LMK to real 6-tier minfree/adj (4GB RAM profile)
-        working-directory: kernel
-        run: |
-          F=drivers/staging/android/lowmemorykiller.c
-          if [ ! -f "$F" ]; then
-            echo "ERROR: no se encontró $F en la ruta esperada"
-            find . -iname "lowmemorykiller.c" 2>/dev/null
-            exit 1
-          fi
-          cp "$F" "$F.orig"
-          python3 - "$F" << 'PYEOF'
-          import sys
-          path = sys.argv[1]
-          with open(path) as f:
-              content = f.read()
-          old = (
-              "static short lowmem_adj[6] = {\n"
-              "\t0,\n"
-              "\t1,\n"
-              "\t6,\n"
-              "\t12,\n"
-              "};\n"
-              "static int lowmem_adj_size = 4;\n"
-              "static int lowmem_minfree[6] = {\n"
-              "\t3 * 512,\t/* 6MB */\n"
-              "\t2 * 1024,\t/* 8MB */\n"
-              "\t4 * 1024,\t/* 16MB */\n"
-              "\t16 * 1024,\t/* 64MB */\n"
-              "};\n"
-              "static int lowmem_minfree_size = 4;\n"
-          )
-          new = (
-              "static short lowmem_adj[6] = {\n"
-              "\t0,\n"
-              "\t1,\n"
-              "\t6,\n"
-              "\t9,\n"
-              "\t12,\n"
-              "\t15,\n"
-              "};\n"
-              "static int lowmem_adj_size = 6;\n"
-              "static int lowmem_minfree[6] = {\n"
-              "\t3 * 1024,\t/* 12MB */\n"
-              "\t4608,\t\t/* 18MB */\n"
-              "\t7 * 1024,\t/* 28MB */\n"
-              "\t10240,\t\t/* 40MB */\n"
-              "\t16 * 1024,\t/* 64MB */\n"
-              "\t23040,\t\t/* 90MB */\n"
-              "};\n"
-              "static int lowmem_minfree_size = 6;\n"
-          )
-          if old not in content:
-              print("ERROR: el bloque original de lowmem_adj/lowmem_minfree no coincidió exacto (¿cambió el whitespace o el árbol?)")
-              sys.exit(1)
-          if content.count(old) != 1:
-              print(f"ERROR: el bloque original apareció {content.count(old)} veces, se esperaba 1")
-              sys.exit(1)
-          content = content.replace(old, new)
-          with open(path, "w") as f:
-              f.write(content)
-          print("OK: bloque LMK reemplazado exactamente 1 vez")
-          PYEOF
-          grep -q "static int lowmem_adj_size = 6;" "$F" || { echo "ERROR: lowmem_adj_size no quedó en 6"; diff "$F.orig" "$F"; exit 1; }
-          grep -q "static int lowmem_minfree_size = 6;" "$F" || { echo "ERROR: lowmem_minfree_size no quedó en 6"; diff "$F.orig" "$F"; exit 1; }
-          grep -q "16 \* 1024" "$F" && grep -q "64MB" "$F" || { echo "ERROR: el nivel adj=12 (64MB) no se preservó tal cual"; diff "$F.orig" "$F"; exit 1; }
-          echo "--- Diff completo aplicado ---"
-          diff "$F.orig" "$F" || true
-          rm "$F.orig"
       # ============================================================
       # 11. COMPILACIÓN (con verificaciones de .config)
       # ============================================================
@@ -1019,6 +767,7 @@ jobs:
           export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
           export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
           make O=out lineage_a7y18lte_defconfig
+
           # Verificaciones
           grep -q "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" out/.config || { echo "ERROR: schedutil no activo en .config"; exit 1; }
           grep -q "CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y" out/.config || { echo "ERROR: schedutil no es el gobernador por defecto en .config"; exit 1; }
@@ -1035,7 +784,11 @@ jobs:
           grep -q "CONFIG_KSM=y" out/.config || { echo "ERROR: KSM no activo en .config"; exit 1; }
           grep -q "CONFIG_THERMAL_WRITABLE_TRIPS=y" out/.config || { echo "ERROR: THERMAL_WRITABLE_TRIPS no activo en .config"; exit 1; }
           grep -q "CONFIG_TRANSPARENT_HUGEPAGE=y" out/.config || { echo "ERROR: THP no activo en .config"; exit 1; }
-          # UKSM desactivado temporalmente (ver step "Apply UKSM patch") - sin verificacion aqui
+          grep -q "CONFIG_UKSM=y" out/.config || { echo "ERROR: UKSM no activo en .config"; exit 1; }
+          if grep -q "CONFIG_KSM_LEGACY=y" out/.config; then
+            echo "ERROR: KSM_LEGACY activo - excluiria a UKSM en runtime"; exit 1
+          fi
+          echo "UKSM OK (KSM_LEGACY ausente)"
           grep -q "CONFIG_NETFILTER_XT_TARGET_HL=y" out/.config || { echo "ERROR: TTL/HL (NETFILTER_XT_TARGET_HL) no activo en .config"; exit 1; }
           # BBR es opcional (depende de si el donante lo trae backporteado a 4.4) - no bloquea el build
           if grep -q "CONFIG_TCP_CONG_BBR=y" out/.config; then
@@ -1043,8 +796,10 @@ jobs:
           else
             echo "AVISO: BBR no disponible en .config (BBR_STATUS=${BBR_STATUS:-unavailable}) - build continúa con cubic+fq"
           fi
+
           echo "Todas las opciones están correctamente habilitadas en .config"
           make O=out -j"$(nproc)"
+
       - name: Verify kernel output
         working-directory: kernel
         run: |
@@ -1054,6 +809,7 @@ jobs:
             exit 1
           fi
           echo "Kernel compiled successfully"
+
       # ============================================================
       # 12. EMPAQUETADO CON ANYKERNEL3
       # ============================================================
@@ -1069,6 +825,7 @@ jobs:
         run: |
           cp kernel/out/arch/arm64/boot/Image anykernel3/Image
           ls -lh anykernel3/Image
+
       # ============================================================
       # FIX CRÍTICO: anykernel.sh (revisado) no define ninguna variable
       # dtb= ni maneja el DTB de forma explícita - solo llama a
@@ -1102,6 +859,7 @@ jobs:
           echo "DTB seleccionado: $DTB"
           cp "$DTB" anykernel3/dtb
           ls -lh anykernel3/dtb
+
       - name: Create build-info.txt
         run: |
           cat > anykernel3/build-info.txt <<EOF
@@ -1129,8 +887,8 @@ jobs:
             - fq qdisc (activo, compilado nativamente en este árbol)
             - TCP BBR: ${BBR_STATUS:-unavailable} (ver log del step "Port TCP BBR from donor"; si es "unavailable" el kernel usa cubic+fq igual)
             - KSM (Kernel Samepage Merging, se activa por script)
+            - UKSM (reemplazo agresivo de KSM, CONFIG_UKSM=y - KSM_LEGACY desactivado)
             - GPU DVFS: umbrales corregidos en los 3 escalones superiores
-            - Input booster nativo: techo de TOUCH/MULTITOUCH subido a 2184000
             - Watchdog de salud del touch IC Imagis IST40XX
           NOTA: build de TESTING. read_ahead_kb, dirty_ratio/dirty_background_ratio,
           fq/BBR y KSM se activan en runtime desde 99-kernel-tweaks.sh (fuera de este workflow).
@@ -1138,12 +896,14 @@ jobs:
           ============================================================
           EOF
           cat anykernel3/build-info.txt
+
       - name: Create flashable ZIP
         run: |
           cd anykernel3
           zip -r9 ../a7y18lte-Kernel-testing.zip . -x "*.git*"
           cd ..
           ls -lh a7y18lte-Kernel-testing.zip
+
       - name: Upload final ZIP artifact
         uses: actions/upload-artifact@v4
         with:

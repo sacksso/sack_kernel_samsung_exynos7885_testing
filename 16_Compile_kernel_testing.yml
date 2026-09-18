@@ -669,12 +669,12 @@ jobs:
           grep -q "CONFIG_CRYPTO_ZSTD=y" "$DEFCONFIG" || { echo "ERROR: ZSTD no activado"; exit 1; }
 
       # ============================================================
-      # GAMING TUNING 1/2: umbrales de gpu_dvfs_table (device tree).
+      # GAMING TUNING: umbrales de gpu_dvfs_table (device tree).
       # Las 3 filas superiores (1300/1200/1100 MHz) tenían max_threshold=100
       # (prácticamente inalcanzable en gaming real) mientras el resto de la
       # tabla usa 95 - se alinean. gpu_max_clock (1100000, confirmado real,
-      # NO 1300000) y gpu_temp_throttling quedan intactos - cero overclock,
-      # solo se corrige un umbral inconsistente en filas ya existentes.
+      # gpu_max_clock y gpu_temp_throttling quedan intactos; solo se corrige
+      # un umbral inconsistente en filas ya existentes.
       # NOTA (sin resolver, revisar antes de tocar de nuevo): la fila
       # 1200000 también cambia su PRIMER valor (98->90), no solo el
       # max_threshold - el comentario original no explica ese segundo
@@ -708,41 +708,6 @@ jobs:
             echo "ERROR: gpu_max_clock no coincide con el valor confirmado (1100000)."
             grep -n "gpu_max_clock" "$F"; diff "$F.orig" "$F"; exit 1
           }
-          echo "--- Diff completo aplicado ---"
-          diff "$F.orig" "$F" || true
-          rm "$F.orig"
-
-      # ============================================================
-      # GAMING TUNING 2/2: techo de boost táctil (input_booster nativo de
-      # Samsung, YA ACTIVO en drivers/input/input.c a nivel genérico de
-      # input_event() - NO requiere CONFIG_INPUT_BOOSTER, que de hecho
-      # apagaría esta rama nativa si se activara). Se sube el techo de
-      # TOUCH/MULTITOUCH de 1144000/936000 al máximo real confirmado de la
-      # BIG (2184000, el mismo valor certificado que se usó para descartar
-      # el overclock). KEY/TOUCHKEY/KEYBOARD quedan intactos.
-      # PROBADO 1 DÍA COMPLETO en uso normal sin quejas de batería/calor -
-      # aceptado tal cual. Si hace falta bajar la agresividad en el futuro,
-      # el punto medio sugerido es 1600000-1800000 en vez de 2184000.
-      # ============================================================
-
-      - name: Tune native touch input-booster ceiling for gaming
-        working-directory: kernel
-        run: |
-          F=$(grep -rl 'input_booster,label = "TOUCH"' arch/arm64/boot/dts 2>/dev/null | head -1)
-          if [ -z "$F" ]; then
-            echo "ERROR: no se encontró el archivo con el nodo input_booster TOUCH"
-            exit 1
-          fi
-          echo "Archivo encontrado: $F"
-          cp "$F" "$F.orig"
-
-          perl -0777 -pi -e 's/(input_booster,label = "TOUCH";.*?input_booster,cpu_freqs = <)1144000 1144000 936000(>;)/${1}2184000 2184000 2184000${2}/s' "$F"
-          perl -0777 -pi -e 's/(input_booster,label = "MULTITOUCH";.*?input_booster,cpu_freqs = <)1144000 936000(>;)/${1}2184000 2184000${2}/s' "$F"
-
-          grep -A12 'label = "TOUCH"' "$F" | grep -q "cpu_freqs = <2184000 2184000 2184000>;" || { echo "ERROR: TOUCH no se actualizó"; diff "$F.orig" "$F"; exit 1; }
-          grep -A12 'label = "MULTITOUCH"' "$F" | grep -q "cpu_freqs = <2184000 2184000>;" || { echo "ERROR: MULTITOUCH no se actualizó"; diff "$F.orig" "$F"; exit 1; }
-          grep -A12 'label = "KEY"' "$F" | grep -q "cpu_freqs = <1144000>;" || { echo "ERROR: KEY se tocó sin querer"; exit 1; }
-          grep -A12 'label = "TOUCHKEY"' "$F" | grep -q "cpu_freqs = <1144000>;" || { echo "ERROR: TOUCHKEY se tocó sin querer"; exit 1; }
           echo "--- Diff completo aplicado ---"
           diff "$F.orig" "$F" || true
           rm "$F.orig"
@@ -1005,7 +970,6 @@ jobs:
             - KSM (Kernel Samepage Merging, se activa por script)
             - UKSM (reemplazo agresivo de KSM, CONFIG_UKSM=y - KSM_LEGACY desactivado)
             - GPU DVFS: umbrales corregidos en los 3 escalones superiores
-            - Input booster nativo: techo de TOUCH/MULTITOUCH subido a 2184000
             - Watchdog de salud del touch IC Imagis IST40XX
           NOTA: build de TESTING. read_ahead_kb, dirty_ratio/dirty_background_ratio,
           fq/BBR y KSM se activan en runtime desde 99-kernel-tweaks.sh (fuera de este workflow).

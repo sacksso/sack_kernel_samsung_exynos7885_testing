@@ -11,12 +11,13 @@
 
 #include "exynos7885-rmem.dtsi"
 #include "exynos7885.dtsi"
-#include "display-lcd_a7y18_common.dtsi"
 #include "modem-s327ap-sipc-pdata.dtsi"
 #include "battery_data_a7y18lte_common.dtsi"
 #include "exynos7885-a7y18lte_motor.dtsi"
 #include "exynos7885-mali.dtsi"
 / {
+	#include "display-lcd_a7y18_common.dtsi"
+
 	model = "Samsung Universal7885 board based on EXYNOS7885";
 	compatible = "samsung,exynos7885", "samsung,Universal7885";
 
@@ -2214,5 +2215,15 @@
 		pinctrl-0 = <&pcb_det>;
 		gpios = <&gpa0 6 0>;
 	};
+};
+
+&dsim_0 {
+	lcd_info = <&s6e3fa7>;
+};
+
+&decon_f {
+	psr_mode = <2>; 		/* 0: video mode, 1: DP command mode, 2: MIPI command mode */
+	trig_mode = <0>;	/* 0: hw trigger, 1: sw trigger */
+	dsi_mode = <0>;	/* 0: single dsi, 1: dual dsi */
 };
 

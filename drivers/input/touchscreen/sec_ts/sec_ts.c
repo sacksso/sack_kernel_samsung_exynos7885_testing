@@ -14,11 +14,6 @@ struct sec_ts_data *tsp_info;
 
 #include "sec_ts.h"
 
-#ifdef CONFIG_FB
-#include <linux/notifier.h>
-#include <linux/fb.h>
-#endif
-
 #ifdef CONFIG_SECURE_TOUCH
 enum subsystem {
 	TZ = 1,
@@ -42,6 +37,13 @@ static void sec_ts_input_close(struct input_dev *dev);
 
 #ifdef CONFIG_INPUT_WACOM
 extern void epen_disable_mode(int mode);
+#endif
+
+#if defined(CONFIG_FB)
+static int touch_fb_notifier_callback(struct notifier_block *self,
+		unsigned long event, void *data);
+extern int input_enable_device(struct input_dev *dev);
+extern int input_disable_device(struct input_dev *dev);
 #endif
 
 int sec_ts_read_information(struct sec_ts_data *ts);
@@ -1299,7 +1301,7 @@ static void sec_ts_read_event(struct sec_ts_data *ts)
 				input_info(true, &ts->client->dev, "%s: AOD: %d, %d, %d\n",
 								__func__, ts->scrub_id, ts->scrub_x, ts->scrub_y);
 #endif
-				input_report_key(ts->input_dev, KEY_WAKEUP, 1);
+				input_report_key(ts->input_dev, KEY_BLACK_UI_GESTURE, 1);
 				ts->all_aod_tap_count++;
 				break;
 			case SEC_TS_GESTURE_CODE_SINGLE_TAP:
@@ -1364,7 +1366,6 @@ static void sec_ts_read_event(struct sec_ts_data *ts)
 
 			input_sync(ts->input_dev);
 			input_report_key(ts->input_dev, KEY_BLACK_UI_GESTURE, 0);
-			input_report_key(ts->input_dev, KEY_WAKEUP, 0);
 			break;
 
 		default:
@@ -1397,11 +1398,16 @@ static irqreturn_t sec_ts_irq_thread(int irq, void *ptr)
 	}
 #endif
 
+	/* prevent CPU from entering deep sleep */
+	pm_qos_update_request(&ts->pm_qos_req, 100);
+
 	mutex_lock(&ts->eventlock);
 
 	sec_ts_read_event(ts);
 
 	mutex_unlock(&ts->eventlock);
+
+	pm_qos_update_request(&ts->pm_qos_req, PM_QOS_DEFAULT_VALUE);
 
 	return IRQ_HANDLED;
 }
@@ -2027,7 +2033,6 @@ static void sec_ts_set_input_prop(struct sec_ts_data *ts, struct input_dev *dev,
 	set_bit(BTN_TOUCH, dev->keybit);
 	set_bit(BTN_TOOL_FINGER, dev->keybit);
 	set_bit(KEY_BLACK_UI_GESTURE, dev->keybit);
-	set_bit(KEY_WAKEUP, dev->keybit);
 #ifdef SEC_TS_SUPPORT_TOUCH_KEY
 	if (ts->plat_data->support_mskey) {
 		int i;
@@ -2064,12 +2069,6 @@ static void sec_ts_set_input_prop(struct sec_ts_data *ts, struct input_dev *dev,
 
 	input_set_drvdata(dev, ts);
 }
-
-#ifdef CONFIG_FB
-static int fb_notifier_callback(struct notifier_block *self,
-				unsigned long event,
-				void *data);
-#endif
 
 static int sec_ts_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
@@ -2236,6 +2235,9 @@ static int sec_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 				"%s: TOUCH DEVICE ID : %02X, %02X, %02X, %02X, %02X\n", __func__,
 				deviceID[0], deviceID[1], deviceID[2], deviceID[3], deviceID[4]);
 
+	pm_qos_add_request(&ts->pm_qos_req, PM_QOS_CPU_DMA_LATENCY,
+		PM_QOS_DEFAULT_VALUE);
+
 	ret = sec_ts_i2c_read(ts, SEC_TS_READ_FIRMWARE_INTEGRITY, &result, 1);
 	if (ret < 0) {
 		input_err(true, &ts->client->dev, "%s: failed to integrity check (%d)\n", __func__, ret);
@@ -2345,18 +2347,22 @@ static int sec_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 		goto err_irq;
 	}
 
-#ifdef CONFIG_FB
-	ts->fb_notif.notifier_call = fb_notifier_callback;
-	if (fb_register_client(&ts->fb_notif))
-		pr_err("%s: could not create fb notifier\n", __func__);
-#endif
-
 #ifdef CONFIG_TRUSTONIC_TRUSTED_UI
 	tsp_info = ts;
 
 	trustedui_set_tsp_irq(client->irq);
 	input_info(true, &client->dev, "%s[%d] called!\n",
 			__func__, client->irq);
+#endif
+
+#ifdef CONFIG_FB
+	ts->fb_notif.notifier_call = touch_fb_notifier_callback;
+	ret = fb_register_client(&ts->fb_notif);
+	if (ret < 0) {
+		input_err(true, &ts->client->dev, "%s: Failed to register fb client\n",
+			__func__);
+		goto err_fb_client;
+	}
 #endif
 
 	/* need remove below resource @ remove driver */
@@ -2405,7 +2411,13 @@ static int sec_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 	sec_ts_fn_remove(ts);
 	free_irq(client->irq, ts);
 #endif
+#ifdef CONFIG_FB
+	fb_unregister_client(&ts->fb_notif);
+
+err_fb_client:
+#endif
 err_irq:
+	pm_qos_remove_request(&ts->pm_qos_req);
 	if (ts->plat_data->support_dex) {
 		input_unregister_device(ts->input_dev_pad);
 		ts->input_dev_pad = NULL;
@@ -2837,12 +2849,20 @@ static int sec_ts_remove(struct i2c_client *client)
 
 	input_info(true, &ts->client->dev, "%s\n", __func__);
 
+#if defined(CONFIG_FB)
+	if (fb_unregister_client(&ts->fb_notif))
+		input_info(true, &ts->client->dev,
+			"%s: Error occured while unregistering fb_notifier.\n", __func__);
+#endif
+
 	cancel_delayed_work_sync(&ts->work_read_info);
 	flush_delayed_work(&ts->work_read_info);
 
 	disable_irq_nosync(ts->client->irq);
 	free_irq(ts->client->irq, ts);
 	input_info(true, &ts->client->dev, "%s: irq disabled\n", __func__);
+
+	pm_qos_remove_request(&ts->pm_qos_req);
 
 #ifdef USE_POWER_RESET_WORK
 	cancel_delayed_work_sync(&ts->reset_work);
@@ -2882,10 +2902,6 @@ static int sec_ts_remove(struct i2c_client *client)
 	ts->input_dev_touch = NULL;
 	ts_dup = NULL;
 	ts->plat_data->power(ts, false);
-
-#ifdef CONFIG_FB
-	fb_unregister_client(&ts->fb_notif);
-#endif
 
 #ifdef CONFIG_TRUSTONIC_TRUSTED_UI
 	tsp_info = NULL;
@@ -3082,36 +3098,27 @@ static int sec_ts_pm_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
-#ifdef CONFIG_FB
-static int fb_notifier_callback(struct notifier_block *self,
-				unsigned long event,
-				void *data)
+#if defined(CONFIG_FB)
+static int touch_fb_notifier_callback(struct notifier_block *self,
+		unsigned long event, void *data)
 {
-	struct fb_event *evdata = data;
-	struct sec_ts_data *tc_data = container_of(self, struct sec_ts_data, fb_notif);
+	struct sec_ts_data *ts =
+		container_of(self, struct sec_ts_data, fb_notif);
+	struct fb_event *ev = (struct fb_event *)data;
 
-	if (evdata && evdata->data && event == FB_EVENT_BLANK) {
-		int *blank = evdata->data;
-		switch (*blank) {
-		case FB_BLANK_UNBLANK:
-		case FB_BLANK_NORMAL:
-		case FB_BLANK_VSYNC_SUSPEND:
-		case FB_BLANK_HSYNC_SUSPEND:
-		        sec_ts_input_open(tc_data->input_dev);
-			break;
-		case FB_BLANK_POWERDOWN:
-		        sec_ts_input_close(tc_data->input_dev);
-			break;
-		default:
-			/* Don't handle what we don't understand */
-			break;
-		}
+	if (ev && ev->data && event == FB_EVENT_BLANK) {
+		int *blank = (int *)ev->data;
+
+		if (*blank == FB_BLANK_UNBLANK)
+			input_enable_device(ts->input_dev);
+		else
+			input_disable_device(ts->input_dev);
 	}
 
 	return 0;
 }
+#endif
 #endif
 
 #ifdef CONFIG_TRUSTONIC_TRUSTED_UI

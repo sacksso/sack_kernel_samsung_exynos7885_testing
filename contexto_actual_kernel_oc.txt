@@ -1,0 +1,184 @@
+Resumen completo del contexto actual del kernel Exynos 7885 / OC
+=================================================================
+
+Objetivo:
+- Compilar un kernel funcional para Samsung A7 2018 (Exynos 7885)
+- Mantener la intención de OC en CPU/ACME sin romper el build
+- Finalizar con empaquetado flashable (AnyKernel3) y validación en hardware
+
+Fecha actual:
+- 2026-09-18
+
+Repositorio / rama:
+- /workspaces/sack_kernel_samsung_exynos7885_testing
+- rama: lineage-18.1
+
+Archivos clave:
+- drivers/cpufreq/exynos-acme.c
+- arch/arm64/boot/dts/exynos/exynos7885.dtsi
+- arch/arm64/boot/dts/exynos/display-lcd_a7y18_common.dtsi
+- .github/workflows/16_Compile_kernel_testing.yml
+- arch/arm64/boot/dts/exynos/exynos7885-a7y18lte_common.dtsi
+- kernel/cpu.c
+- kernel/extable.c
+- mm/page_alloc.c
+- kernel/locking/semaphore.c
+- mm/memblock.c
+
+=============================================================
+HISTORIAL Y DIAGNÓSTICO
+=============================================================
+
+1) Objetivo inicial
+- El usuario pedía ayuda para lograr OC en este mismo kernel.
+- Se apuntó a mantener la idea de OC en el árbol real del kernel, no forzar hacks raros ni sobrescribir caminos de ACME sin necesidad.
+
+2) Qué se revisó
+- El driver ACME de cpufreq
+- La device tree del SoC Exynos 7885
+- El workflow del compilado CI
+- El paquete AnyKernel3 para ZIP flashable
+
+3) Diagnóstico de OC / ACME
+- El kernel ya tiene valores esperados para los dominios CPU en DTS:
+  - BIG: 2288000
+  - LITTLE: 1690000
+- La ruta correcta no es meter overrides manuales en varios callbacks.
+- La ruta correcta es dejar que el pipeline normal de cpufreq use la tabla y el `scale()` con la frecuencia objetivo.
+
+4) Problemas reales encontrados antes
+- El workflow apuntaba a un repo incorrecto
+- Se fueron acumulando patches redundantes de OC en ACME
+- El workflow tenía supuestos viejos sobre GPU que no reflejaban el DTS real
+- Hubo warnings y fallos de compilación como:
+  - implicit declaration of function 'exynos_cpufreq_set_freq'
+  - unused-function
+  - misleading-indentation
+
+5) Correcciones aplicadas para limpiar el driver ACME
+- Se quitó código redundante y stale
+- Se dejó la lógica coherente con el uso normal de `cpufreq_frequency_table_verify()` / `cpufreq_frequency_table_target()`
+- Se corrigió la llamada a `scale(domain, policy, domain->freq_table[index].frequency);`
+- Se eliminó `index_to_freq()` si quedaba sin uso
+
+6) Problema de DTS detectado
+- Se encontró un error real en display-lcd_a7y18_common.dtsi.
+- El archivo estaba repitiendo un nodo raíz dentro del include, lo que hacía que el DT parser falle.
+- Se corrigió el archivo para que no abra dos bloques raíz en un include.
+
+7) Problemas de compilación con GCC moderno (importante)
+- La compilación local con GCC 13 del sistema falló por warnings-as-errors del kernel 4.4.302.
+- Fallos ejemplos reales:
+  - `-Werror=array-compare`
+  - `-Werror=dangling-pointer`
+  - errores en kernel/locking/semaphore.c y mm/memblock.c
+- Esto indica que el problema principal ya no es el OC, sino incompatibilidad del árbol viejo con el compilador moderno.
+
+=============================================================
+CAMBIOS CONCRETOS EDITADOS
+=============================================================
+
+Archivo: arch/arm64/boot/dts/exynos/display-lcd_a7y18_common.dtsi
+- Se corrigió el problema sintáctico del DT.
+- El include ya no rompe el parse del árbol DT.
+
+Archivo: kernel/cpu.c
+- Se eliminó la comparación redundante `frozen_cpus != NULL` que GCC trataba como warning de address y luego como error.
+
+Archivo: kernel/extable.c
+- Se cambió la comparación de arrays a comparación explícita de direcciones para evitar `-Werror=array-compare`.
+
+Archivo: mm/page_alloc.c
+- Se corrige el uso de macros `adj_init_size` para comparar direcciones y no arrays.
+
+=============================================================
+ESTADO ACTUAL DE VERIFICACIÓN
+=============================================================
+
+Se ejecutó la compilación local con GCC del sistema (no la toolchain del workflow):
+
+export ARCH=arm64
+export SUBARCH=arm64
+export CROSS_COMPILE=aarch64-linux-gnu-
+export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+make mrproper
+make O=out lineage_a7y18lte_defconfig
+make O=out -j"$(nproc)"
+
+Resultado observado:
+- El DTS ya no es el bloqueo principal
+- El build sigue fallando por incompatibilidad del árbol con GCC 13 y `-Werror`
+- Errores reales vistos en la última ejecución:
+  - `cc1: all warnings being treated as errors`
+  - `error: storing the address of local variable 'waiter' ... [-Werror=dangling-pointer]`
+  - `error: comparison between two arrays [-Werror=array-compare]`
+
+Puntos donde falla la última compilación:
+- kernel/locking/semaphore.c
+- mm/memblock.c
+
+=============================================================
+DIAGNÓSTICO PRINCIPAL ACTUAL
+=============================================================
+
+Punto clave:
+- Este kernel 4.4.302 no está compilando limpio con GCC 13 del sistema.
+- Por lo tanto, la prioridad NO es seguir parcheando OC por fuerza, sino usar la toolchain correcta.
+
+La ruta correcta es compilar con el toolchain de Lineage 6.4.1 que usa el workflow, no con la GCC del sistema.
+
+=============================================================
+RUTA CORRECTA A SEGUIR
+=============================================================
+
+1) Descargar / checkout la toolchain según el workflow
+- Repositorio: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1
+- Branch: lineage-18.1
+
+2) Exportar las variables correctas:
+export ARCH=arm64
+export SUBARCH=arm64
+export CROSS_COMPILE=$PWD/toolchain/aarch64/bin/aarch64-linux-gnu-
+export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+3) Ejecutar el build con la toolchain adecuada:
+make mrproper
+make O=out lineage_a7y18lte_defconfig
+make O=out -j"$(nproc)"
+
+4) Si el build pasa, continuar con packaging:
+- Image
+- dtb
+- AnyKernel3 ZIP
+- flash final
+
+5) Validar hardware:
+- cpuinfo_max_freq
+- scaling_available_frequencies
+- dmesg
+- confirmación de BIG = 2288000 / LITTLE = 1690000 y que CAL acepta la frecuencia
+
+=============================================================
+ARCHIVOS MAS IMPORTANTES PARA SEGUIR DESDE ACA
+=============================================================
+
+- [.github/workflows/16_Compile_kernel_testing.yml](.github/workflows/16_Compile_kernel_testing.yml)
+- [drivers/cpufreq/exynos-acme.c](drivers/cpufreq/exynos-acme.c)
+- [arch/arm64/boot/dts/exynos/exynos7885.dtsi](arch/arm64/boot/dts/exynos/exynos7885.dtsi)
+- [arch/arm64/boot/dts/exynos/exynos7885-a7y18lte_common.dtsi](arch/arm64/boot/dts/exynos/exynos7885-a7y18lte_common.dtsi)
+- [arch/arm64/boot/dts/exynos/display-lcd_a7y18_common.dtsi](arch/arm64/boot/dts/exynos/display-lcd_a7y18_common.dtsi)
+- [kernel/cpu.c](kernel/cpu.c)
+- [kernel/extable.c](kernel/extable.c)
+- [mm/page_alloc.c](mm/page_alloc.c)
+
+=============================================================
+CONCLUSIÓN PRÁCTICA
+=============================================================
+
+El trabajo ya no está en “seguir metiendo cambios al OC” sino en:
+- dejar el árbol limpio y consistente
+- compilar con la toolchain exacta de Lineage
+- validar el build real
+- luego continuar con la validación del OC/ACME en hardware
+
+Este es el punto correcto para que otro agente o IA cloud continúe sin repetir trabajo ni perder el hilo.
