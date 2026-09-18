@@ -1060,14 +1060,7 @@ static __init int init_domain(struct exynos_cpufreq_domain *domain,
 
 	mutex_init(&domain->lock);
 
-	/* Keep the selected OC levels inside the normal ACME table pipeline. */
-	if (domain->id == 0) {
-		domain->max_freq = 1690000;
-	} else if (domain->id == 1) {
-		domain->max_freq = 2288000;
-	} else {
-		domain->max_freq = cal_dfs_get_max_freq(domain->cal_id);
-	}
+	domain->max_freq = cal_dfs_get_max_freq(domain->cal_id);
 	domain->min_freq = cal_dfs_get_min_freq(domain->cal_id);
 
 	/*
@@ -1091,9 +1084,6 @@ static __init int init_domain(struct exynos_cpufreq_domain *domain,
 		unsigned int i, cpu_count = cpumask_weight(&domain->cpus);
 
 		cal_dfs_get_bigturbo_max_freq(domain->boost_max_freqs);
-                /* Forzar boost max a 2288 MHz para CPU BIG */
-                if (domain->id == 1) 
-                    domain->boost_max_freqs[0] = 2288000;
 		if (of_find_property(dn, "boost_max_freqs", NULL)) {
 			unsigned int *max_freqs;
 
