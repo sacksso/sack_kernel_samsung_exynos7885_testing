@@ -1,6 +1,6 @@
 name: Build Kernel for a7y18lte - TESTING (schedutil, lz4, cubic, BFQ, WireGuard, BBR, KSM)
 
-json:
+on:
   workflow_dispatch:
 
 jobs:
