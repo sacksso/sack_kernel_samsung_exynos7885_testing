@@ -317,7 +317,7 @@ static int __exynos_cpufreq_target(struct cpufreq_policy *policy,
                                                 target_freq, relation, &index);
         if (ret)
                 goto out;
-        ret = exynos_cpufreq_set_freq(domain, index);
+		ret = scale(domain, policy, domain->freq_table[index].frequency);
         if (!ret)
                 domain->old = domain->freq_table[index].frequency;
 out:
