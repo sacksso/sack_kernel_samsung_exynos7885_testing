@@ -131,12 +131,6 @@ static bool static_governor(struct cpufreq_policy *policy)
 	return false;
 }
 
-static int index_to_freq(struct cpufreq_frequency_table *table,
-					unsigned int index)
-{
-	return table[index].frequency;
-}
-
 /*********************************************************************
  *                         FREQUENCY SCALING                         *
  *********************************************************************/
@@ -317,7 +311,7 @@ static int __exynos_cpufreq_target(struct cpufreq_policy *policy,
                                                 target_freq, relation, &index);
         if (ret)
                 goto out;
-		ret = scale(domain, policy, domain->freq_table[index].frequency);
+        ret = scale(domain, policy, domain->freq_table[index].frequency);
         if (!ret)
                 domain->old = domain->freq_table[index].frequency;
 out:
