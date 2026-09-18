@@ -236,7 +236,6 @@ fail_scale:
 
 	return ret;
 }
-
 static int update_freq(struct exynos_cpufreq_domain *domain,
 					 unsigned int freq)
 {
@@ -273,11 +272,6 @@ static int exynos_cpufreq_driver_init(struct cpufreq_policy *policy)
 		return -EINVAL;
 
 	ret = cpufreq_table_validate_and_show(policy, domain->freq_table);
-        /* Forzar CPU BIG a 2288 MHz */
-        if (domain->id == 1) {
-                policy->max = 2288000;
-                policy->cpuinfo.max_freq = 2288000;
-        }
 	if (ret) {
 		pr_err("%s: invalid frequency table: %d\n", __func__, ret);
 		return ret;
@@ -294,17 +288,12 @@ static int exynos_cpufreq_driver_init(struct cpufreq_policy *policy)
 
 static int exynos_cpufreq_verify(struct cpufreq_policy *policy)
 {
-        struct exynos_cpufreq_domain *domain = find_domain(policy->cpu);
-        if (!domain)
-                return -EINVAL;
-        /* Forzar CPU BIG a 2288 MHz */
-        if (policy->cpu >= 6) {
-                pr_info("EXYNOS: Forzando policy->max a 2288000 para CPU%d\n", policy->cpu);
-                policy->max = 2288000;
-                policy->cpuinfo.max_freq = 2288000;
-                return 0;
-        }
-        return cpufreq_frequency_table_verify(policy, domain->freq_table);
+	struct exynos_cpufreq_domain *domain = find_domain(policy->cpu);
+
+	if (!domain)
+		return -EINVAL;
+
+	return cpufreq_frequency_table_verify(policy, domain->freq_table);
 }
 
 static int __exynos_cpufreq_target(struct cpufreq_policy *policy,
@@ -316,11 +305,6 @@ static int __exynos_cpufreq_target(struct cpufreq_policy *policy,
         int ret = 0;
         if (!domain)
                 return -EINVAL;
-        /* Forzar CPU BIG a 2288 MHz */
-        if (policy->cpu >= 6) {
-                target_freq = 2288000;
-                relation = CPUFREQ_RELATION_L;
-        }
         mutex_lock(&domain->lock);
         if (!domain->enabled)
                 goto out;
@@ -375,6 +359,7 @@ static unsigned int exynos_cpufreq_get(unsigned int cpu)
 
 	if (!domain)
 		return 0;
+
 
 	return get_freq(domain);
 }
@@ -1081,29 +1066,15 @@ static __init int init_domain(struct exynos_cpufreq_domain *domain,
 
 	mutex_init(&domain->lock);
 
-	/* ============================================================
-	 * MODIFICACIÓN PARA OVERCLOCK DE CPU
-	 * Forzamos los valores de max_freq y min_freq según el dominio.
-	 * Esto anula los valores que vienen de CAL (hardware/ASV).
-	 * ============================================================ */
+	/* Keep the selected OC levels inside the normal ACME table pipeline. */
 	if (domain->id == 0) {
 		domain->max_freq = 1690000;
-		domain->min_freq = 208000;
 	} else if (domain->id == 1) {
 		domain->max_freq = 2288000;
-		domain->min_freq = 208000;
-	} else {
-		if (domain->id == 0) {
-		domain->max_freq = 1690000;
-		domain->min_freq = 208000;
-	} else if (domain->id == 1) {
-		domain->max_freq = 2288000;
-		domain->min_freq = 208000;
 	} else {
 		domain->max_freq = cal_dfs_get_max_freq(domain->cal_id);
-		domain->min_freq = cal_dfs_get_min_freq(domain->cal_id);
 	}
-	}
+	domain->min_freq = cal_dfs_get_min_freq(domain->cal_id);
 
 	/*
 	 * If max-freq property exists in device tree, max frequency is
@@ -1158,9 +1129,9 @@ static __init int init_domain(struct exynos_cpufreq_domain *domain,
 			}
 		}
 
-		/* change domain->max_freq to maximum level in boost table */
-		// domain->max_freq = max(domain->max_freq, domain->boost_max_freqs[0]);
-                if (domain->id == 1) domain->max_freq = 2288000;
+		/* Keep the domain maximum aligned with the validated boost table. */
+		domain->max_freq = max(domain->max_freq,
+				domain->boost_max_freqs[0]);
 	}
 
 init_table:
@@ -1387,58 +1358,3 @@ static int __init exynos_cpufreq_init(void)
 	return ret;
 }
 device_initcall(exynos_cpufreq_init);
-
-/* Sobrescribir límites térmicos para CPU BIG */
-static int exynos_thermal_override_notifier(struct notifier_block *nb,
-                                            unsigned long event, void *data)
-{
-    struct cpufreq_policy *policy = data;
-
-    if (event == CPUFREQ_POLICY_INIT || event == CPUFREQ_POLICY_UPDATE) {
-        if (policy->cpu >= 6) {
-            policy->max = 2288000;
-            policy->cpuinfo.max_freq = 2288000;
-            pr_info("EXYNOS: Thermal override for CPU%d -> max=2288000\n", policy->cpu);
-        }
-    }
-    return NOTIFY_OK;
-}
-
-static struct notifier_block exynos_thermal_override_nb = {
-    .notifier_call = exynos_thermal_override_notifier,
-    .priority = INT_MAX,
-};
-
-static int __init exynos_thermal_override_init(void)
-{
-    int ret;
-    ret = cpufreq_register_notifier(&exynos_thermal_override_nb, CPUFREQ_POLICY_NOTIFIER);
-    if (ret)
-        pr_err("EXYNOS: Failed to register thermal override notifier\n");
-    return ret;
-}
-late_initcall(exynos_thermal_override_init);
-
-/* Forzar frecuencia máxima de CPU BIG a 2288 MHz después de la inicialización */
-static int __init exynos_force_big_max_freq(void)
-{
-    int cpu;
-    struct cpufreq_policy *policy;
-
-    pr_info("EXYNOS: Forzando política para CPU BIG a 2288000\n");
-
-    for_each_possible_cpu(cpu) {
-        if (cpu >= 6) {  /* Núcleos BIG (A73) en Exynos 7885 */
-            policy = cpufreq_cpu_get(cpu);
-            if (!policy)
-                continue;
-            policy->max = 2288000;
-            policy->cpuinfo.max_freq = 2288000;
-            cpufreq_update_policy(cpu);
-            cpufreq_cpu_put(policy);
-            pr_info("EXYNOS: CPU%d política actualizada a max=2288000\n", cpu);
-        }
-    }
-    return 0;
-}
-late_initcall(exynos_force_big_max_freq);

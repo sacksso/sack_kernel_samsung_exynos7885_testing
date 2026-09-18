@@ -17,7 +17,7 @@ jobs:
       - name: Checkout kernel
         uses: actions/checkout@v4
         with:
-          repository: exynos7885-dev/kernel_samsung_exynos7885
+          repository: sacksso/sack_kernel_samsung_exynos7885_testing
           ref: lineage-18.1
           path: kernel
           fetch-depth: 1
@@ -917,6 +917,19 @@ jobs:
       # 11. COMPILACIÓN (con verificaciones de .config)
       # ============================================================
 
+      - name: Verify ACME CPU OC source and DT tables
+        working-directory: kernel
+        run: |
+          test "$(grep -c 'domain->max_freq = 1690000;' drivers/cpufreq/exynos-acme.c)" -eq 1
+          test "$(grep -c 'domain->max_freq = 2288000;' drivers/cpufreq/exynos-acme.c)" -eq 1
+          test "$(grep -c 'policy->max = 2288000' drivers/cpufreq/exynos-acme.c || true)" -eq 0
+          test "$(grep -c 'target_freq = 2288000' drivers/cpufreq/exynos-acme.c || true)" -eq 0
+          grep -q 'sibling-cpus = "0-5"' arch/arm64/boot/dts/exynos/exynos7885.dtsi
+          grep -q 'sibling-cpus = "6-7"' arch/arm64/boot/dts/exynos/exynos7885.dtsi
+          grep -q 'table = < 1690000 1014000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
+          grep -q 'table = < 2288000 1794000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
+          echo "ACME OC source and DT tables verified"
+
       - name: Compile kernel
         working-directory: kernel
         run: |
@@ -1050,6 +1063,9 @@ jobs:
           zip -r9 ../a7y18lte-Kernel-testing.zip . -x "*.git*"
           cd ..
           ls -lh a7y18lte-Kernel-testing.zip
+          unzip -l a7y18lte-Kernel-testing.zip | grep -Eq '[[:space:]]Image$'
+          unzip -l a7y18lte-Kernel-testing.zip | grep -Eq '[[:space:]]dtb$'
+          echo "ZIP contains Image and dtb"
       - name: Upload final ZIP artifact
         uses: actions/upload-artifact@v4
         with:
