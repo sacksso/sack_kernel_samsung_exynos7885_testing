@@ -1,0 +1,59 @@
+COMANDOS DE DIAGNOSTICO CPUFREQ - EXYNOS 7885
+=============================================
+
+Estos comandos solo leen informacion. No cambian frecuencias ni ajustes.
+Ejecutalos despues de arrancar Android con el kernel que quieras comprobar.
+Se necesita root para leer dmesg y algunos archivos sysfs.
+
+PASOS
+-----
+1. Abre una terminal root en el telefono (por ejemplo, Termux con su).
+2. Escribe `su` y acepta el permiso root.
+3. Copia y pega el bloque completo de abajo.
+4. El informe quedara en /sdcard/Download/cpu-freq-report.txt.
+
+BLOQUE PARA PEGAR EN LA TERMINAL ROOT
+-------------------------------------
+OUT=/sdcard/Download/cpu-freq-report.txt
+mkdir -p /sdcard/Download
+{
+    echo '=== IDENTIFICACION ==='
+    date
+    uname -a
+    echo "device: $(getprop ro.product.device)"
+    echo "model: $(getprop ro.product.model)"
+    echo "android: $(getprop ro.build.version.release)"
+    echo
+
+    echo '=== CMDLINE ==='
+    cat /proc/cmdline 2>&1
+    echo
+
+    echo '=== POLITICAS CPUFREQ ==='
+    for P in /sys/devices/system/cpu/cpufreq/policy*; do
+        [ -d "$P" ] || continue
+        echo "--- $P ---"
+        for F in related_cpus affected_cpus scaling_driver scaling_governor scaling_available_governors scaling_available_frequencies cpuinfo_min_freq cpuinfo_max_freq scaling_min_freq scaling_max_freq scaling_cur_freq cpuinfo_cur_freq; do
+            if [ -r "$P/$F" ]; then
+                printf '%s: ' "$F"
+                cat "$P/$F" 2>&1
+            fi
+        done
+        echo
+    done
+
+    echo '=== REGISTRO DE INICIALIZACION CPUFREQ / ACME / CAL / DVFS ==='
+    dmesg 2>&1 | grep -iE 'cpufreq|exynos-acme|complete to initialize cpufreq|cal-id|dvfs|freq table|domain[0-9]' | tail -n 160
+} > "$OUT" 2>&1
+
+echo "Informe guardado en: $OUT"
+cat "$OUT"
+
+NOTAS
+-----
+- Si el telefono no tiene root, ejecuta lo mismo desde un ordenador con ADB:
+  adb shell su -c '...'
+  (Es mas sencillo usar una terminal root en el telefono para pegar el bloque.)
+- Si `dmesg` muestra Permission denied, confirma que la terminal tiene root.
+- No cambies `scaling_min_freq` ni `scaling_max_freq`; este informe es solo diagnostico.
+- Antes de compartir el informe, puedes ocultar el modelo si prefieres. No incluye IMEI ni numero de serie.

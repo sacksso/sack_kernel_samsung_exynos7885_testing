@@ -454,7 +454,8 @@ jobs:
       #   sintomas de leak prolongado.
       # ============================================================
 
-      - name: Apply UKSM patch (verbose, hard-fail on unexpected state)
+      - name: Apply UKSM patch (disabled until VMA cleanup is fixed)
+        if: ${{ false }}
         working-directory: kernel
         run: |
           set -u
@@ -750,10 +751,14 @@ jobs:
       - name: Port BFQ scheduler and set as default
         working-directory: kernel
         run: |
-          # Copiar archivos BFQ del donante
-          cp -v ../donor/block/bfq-*.c block/ || { echo "ERROR: No se copiaron .c de BFQ"; exit 1; }
-          cp -v ../donor/block/bfq*.h block/ 2>/dev/null || echo "No se encontraron .h en block/"
-          cp -v ../donor/include/linux/bfq*.h include/linux/ 2>/dev/null || echo "No se encontraron .h en include/linux/"
+          # Preservar BFQ integrado en el fork; recurrir al donante solo si falta.
+          if [ -f block/bfq-iosched.c ] && [ -f block/bfq.h ]; then
+            echo "BFQ ya está versionado; se conserva la copia del fork"
+          else
+            cp -v ../donor/block/bfq-*.c block/ || { echo "ERROR: No se copiaron .c de BFQ"; exit 1; }
+            cp -v ../donor/block/bfq*.h block/ 2>/dev/null || echo "No se encontraron .h en block/"
+            cp -v ../donor/include/linux/bfq*.h include/linux/ 2>/dev/null || echo "No se encontraron .h en include/linux/"
+          fi
           ls -la block/bfq-iosched.c block/bfq.h || { echo "ERROR: faltan archivos BFQ"; exit 1; }
           # Modificar Kconfig.iosched para añadir BFQ
           if ! grep -q "config IOSCHED_BFQ" block/Kconfig.iosched; then
@@ -801,7 +806,11 @@ jobs:
         working-directory: kernel
         run: |
           mkdir -p net/wireguard
-          cp -rv ../donor/net/wireguard/* net/wireguard/ || { echo "ERROR: No se pudo copiar WireGuard"; exit 1; }
+          if [ -f net/wireguard/main.c ]; then
+            echo "WireGuard ya está versionado; se conserva la copia del fork"
+          else
+            cp -rv ../donor/net/wireguard/* net/wireguard/ || { echo "ERROR: No se pudo copiar WireGuard"; exit 1; }
+          fi
           ls -la net/wireguard/*.c net/wireguard/*.h 2>/dev/null || { echo "ERROR: No se copió WireGuard"; exit 1; }
           if ! grep -q "net/wireguard/Kconfig" net/Kconfig; then
             sed -i '/^endmenu/i source "net/wireguard/Kconfig"' net/Kconfig
@@ -863,18 +872,19 @@ jobs:
       # 11. COMPILACIÓN (con verificaciones de .config)
       # ============================================================
 
-      - name: Verify ACME CPU OC source and DT tables
+      - name: Verify ACME CPU limits and CPU/MIF tables
         working-directory: kernel
         run: |
-          test "$(grep -c 'domain->max_freq = 1690000;' drivers/cpufreq/exynos-acme.c)" -eq 1
-          test "$(grep -c 'domain->max_freq = 2288000;' drivers/cpufreq/exynos-acme.c)" -eq 1
-          test "$(grep -c 'policy->max = 2288000' drivers/cpufreq/exynos-acme.c || true)" -eq 0
-          test "$(grep -c 'target_freq = 2288000' drivers/cpufreq/exynos-acme.c || true)" -eq 0
+          grep -q 'domain->max_freq = cal_dfs_get_max_freq(domain->cal_id);' drivers/cpufreq/exynos-acme.c
+          if grep -Eq 'domain->max_freq[[:space:]]*=[[:space:]]*(1690000|2288000);|policy->max[[:space:]]*=[[:space:]]*2288000|target_freq[[:space:]]*=[[:space:]]*2288000' drivers/cpufreq/exynos-acme.c; then
+            echo "ERROR: se encontró un override de frecuencia que evita los límites CAL/DT"
+            exit 1
+          fi
           grep -q 'sibling-cpus = "0-5"' arch/arm64/boot/dts/exynos/exynos7885.dtsi
           grep -q 'sibling-cpus = "6-7"' arch/arm64/boot/dts/exynos/exynos7885.dtsi
-          grep -q 'table = < 1690000 1014000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
-          grep -q 'table = < 2288000 1794000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
-          echo "ACME OC source and DT tables verified"
+          grep -q 'table = < 1586000 1014000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
+          grep -q 'table = < 2184000 1794000' arch/arm64/boot/dts/exynos/exynos7885.dtsi
+          echo "ACME CAL limits and CPU/MIF tables verified"
 
       - name: Compile kernel
         working-directory: kernel
@@ -901,11 +911,7 @@ jobs:
           grep -q "CONFIG_KSM=y" out/.config || { echo "ERROR: KSM no activo en .config"; exit 1; }
           grep -q "CONFIG_THERMAL_WRITABLE_TRIPS=y" out/.config || { echo "ERROR: THERMAL_WRITABLE_TRIPS no activo en .config"; exit 1; }
           grep -q "CONFIG_TRANSPARENT_HUGEPAGE=y" out/.config || { echo "ERROR: THP no activo en .config"; exit 1; }
-          grep -q "CONFIG_UKSM=y" out/.config || { echo "ERROR: UKSM no activo en .config"; exit 1; }
-          if grep -q "CONFIG_KSM_LEGACY=y" out/.config; then
-            echo "ERROR: KSM_LEGACY activo - excluiria a UKSM en runtime"; exit 1
-          fi
-          echo "UKSM OK (KSM_LEGACY ausente)"
+          echo "KSM estándar activo; UKSM experimental desactivado"
           grep -q "CONFIG_NETFILTER_XT_TARGET_HL=y" out/.config || { echo "ERROR: TTL/HL (NETFILTER_XT_TARGET_HL) no activo en .config"; exit 1; }
           # BBR es opcional (depende de si el donante lo trae backporteado a 4.4) - no bloquea el build
           if grep -q "CONFIG_TCP_CONG_BBR=y" out/.config; then
@@ -1004,7 +1010,7 @@ jobs:
             - fq qdisc (activo, compilado nativamente en este árbol)
             - TCP BBR: ${BBR_STATUS:-unavailable} (ver log del step "Port TCP BBR from donor"; si es "unavailable" el kernel usa cubic+fq igual)
             - KSM (Kernel Samepage Merging, se activa por script)
-            - UKSM (reemplazo agresivo de KSM, CONFIG_UKSM=y - KSM_LEGACY desactivado)
+            - UKSM desactivado hasta corregir y validar la limpieza de referencias VMA
             - GPU DVFS: umbrales corregidos en los 3 escalones superiores
             - Watchdog de salud del touch IC Imagis IST40XX
           NOTA: build de TESTING. read_ahead_kb, dirty_ratio/dirty_background_ratio,

@@ -14,12 +14,12 @@
 #include "modem-s327ap-sipc-pdata.dtsi"
 #include "battery_data_a7y18lte_common.dtsi"
 #include "exynos7885-a7y18lte_motor.dtsi"
-#include "exynos7885-mali.dtsi"
-/ {
-	#include "display-lcd_a7y18_common.dtsi"
 
+/ {
 	model = "Samsung Universal7885 board based on EXYNOS7885";
 	compatible = "samsung,exynos7885", "samsung,Universal7885";
+
+	#include "display-lcd_a7y18_common.dtsi"
 
 	ect {
 		parameter_address = <0x90000000>;
@@ -2216,6 +2216,8 @@
 		gpios = <&gpa0 6 0>;
 	};
 };
+
+#include "exynos7885-mali.dtsi"
 
 &dsim_0 {
 	lcd_info = <&s6e3fa7>;

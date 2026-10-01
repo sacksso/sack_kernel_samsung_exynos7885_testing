@@ -969,8 +969,8 @@ static int init_constraint_table_dt(struct exynos_cpufreq_domain *domain,
 	 * table is allocated.
 	 */
 	size = of_property_count_u32_elems(dn, "table");
-	if (size < 0)
-		return size;
+	if (size < 2 || size % 2)
+		return size < 0 ? size : -EINVAL;
 
 	table = kzalloc(sizeof(struct exynos_dm_freq) * size / 2, GFP_KERNEL);
 	if (!table)
@@ -982,6 +982,10 @@ static int init_constraint_table_dt(struct exynos_cpufreq_domain *domain,
 
 		if (freq == CPUFREQ_ENTRY_INVALID)
 			continue;
+
+		/* A CAL level above the first DT row uses the highest constraint. */
+		dm->c.freq_table[index].constraint_freq =
+			table[0].constraint_freq;
 
 		for (c_index = 0; c_index < size / 2; c_index++) {
 			/* find row same or nearby frequency */
