@@ -886,6 +886,16 @@ jobs:
       # tipo EMPTY_APP) para que el sistema deje de matar background con
       # apenas 64MB libres en un equipo de 4GB. Aritmética verificada:
       # unidades del driver = páginas de 4KB (3*1024=3072 pág=12MB, etc).
+      #
+      # CORRECCIÓN 2026-10-16: los valores de abajo (12/18/28/40/64/90MB)
+      # resultaron DEMASIADO altos - minfree alto = LMK mata ANTES (con
+      # mas RAM libre todavia), no despues. Causaba que las apps en
+      # background se cerraran casi al instante (adj=15 a 90MB se gatilla
+      # casi siempre en un equipo de 4GB). Se bajan todos los umbrales,
+      # sobre todo los tiers altos (12/15, que son los que deciden si una
+      # app recien minimizada sigue viva), para multitarea mucho mas
+      # permisiva mientras el kernel sigue teniendo zram (4.19x medido) y
+      # min_free_kbytes=12288 como colchon aparte contra un OOM real.
       # ============================================================
 
       - name: Tune LMK to real 6-tier minfree/adj (4GB RAM profile)
@@ -931,11 +941,11 @@ jobs:
               "static int lowmem_adj_size = 6;\n"
               "static int lowmem_minfree[6] = {\n"
               "\t3 * 1024,\t/* 12MB */\n"
-              "\t4608,\t\t/* 18MB */\n"
-              "\t7 * 1024,\t/* 28MB */\n"
+              "\t4 * 1024,\t/* 16MB */\n"
+              "\t6 * 1024,\t/* 24MB */\n"
+              "\t8 * 1024,\t/* 32MB */\n"
               "\t10240,\t\t/* 40MB */\n"
-              "\t16 * 1024,\t/* 64MB */\n"
-              "\t23040,\t\t/* 90MB */\n"
+              "\t12 * 1024,\t/* 48MB */\n"
               "};\n"
               "static int lowmem_minfree_size = 6;\n"
           )
@@ -952,7 +962,7 @@ jobs:
           PYEOF
           grep -q "static int lowmem_adj_size = 6;" "$F" || { echo "ERROR: lowmem_adj_size no quedó en 6"; diff "$F.orig" "$F"; exit 1; }
           grep -q "static int lowmem_minfree_size = 6;" "$F" || { echo "ERROR: lowmem_minfree_size no quedó en 6"; diff "$F.orig" "$F"; exit 1; }
-          grep -q "16 \* 1024" "$F" && grep -q "64MB" "$F" || { echo "ERROR: el nivel adj=12 (64MB) no se preservó tal cual"; diff "$F.orig" "$F"; exit 1; }
+          grep -q "12 \* 1024" "$F" && grep -q "48MB" "$F" || { echo "ERROR: el nivel adj=15 (48MB) no quedó como se esperaba"; diff "$F.orig" "$F"; exit 1; }
           echo "--- Diff completo aplicado ---"
           diff "$F.orig" "$F" || true
           rm "$F.orig"
@@ -1212,6 +1222,7 @@ jobs:
             - GPU DVFS: umbrales corregidos en los 3 escalones superiores
             - Input booster nativo: techo de TOUCH/MULTITOUCH subido a 2184000
             - Watchdog de salud del touch IC Imagis IST40XX
+            - LMK: 6 niveles reales (4GB RAM, multitarea permisiva - ver nota 2026-10-16)
             - Gobernadores extra: blu_active, bioshock, darkness (schedutil sigue por defecto)
             - Guard de schedulers (IOSCHED activos deben tener su .c)
             - RED-LAB (solo configuracion; default sigue cubic + fq):
