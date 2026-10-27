@@ -1797,6 +1797,29 @@ jobs:
         run: |
           cp kernel/out/arch/arm64/boot/Image anykernel3/Image
           ls -lh anykernel3/Image
+
+      # ============================================================
+      # DIAGNOSTICO: ksud post-fs-data falla con "Permission denied" al
+      # arrancar via init (aunque el binario funciona perfecto corrido a
+      # mano con su), pese a que este anykernel.sh dice en sus
+      # properties "Permissive SELinux". getenforce en el equipo real
+      # confirmo "Enforcing" - se sospecha que ese "Permissive" nunca se
+      # aplico realmente. Se fuerza aca via cmdline para descartar/
+      # confirmar SELinux como causa, antes de tocar sepolicy. Reusa la
+      # misma funcion patch_cmdline ya usada para el parametro de OC
+      # (ver 16_Compile_kernel_testing_final.yml).
+      # ============================================================
+
+      - name: Patch anykernel.sh - force SELinux permissive via cmdline (diagnostico ksud)
+        run: |
+          F=anykernel3/anykernel.sh
+          ANCHOR='dump_boot;'
+          test "$(grep -cF "$ANCHOR" "$F")" = "1" || { echo "ERROR: no se encontro 'dump_boot;' una sola vez en $F - revisar a mano"; exit 1; }
+          grep -q 'patch_cmdline "androidboot.selinux"' "$F" || \
+            sed -i "/$ANCHOR/a patch_cmdline \"androidboot.selinux\" \"androidboot.selinux=permissive\";" "$F"
+          grep -q 'patch_cmdline "androidboot.selinux" "androidboot.selinux=permissive";' "$F" || { echo "ERROR: el patch no se insertó"; exit 1; }
+          echo "--- anykernel.sh final (seccion relevante) ---"
+          grep -n -B2 -A2 'patch_cmdline "androidboot.selinux"' "$F"
       # ============================================================
       # FIX CRÍTICO: anykernel.sh (revisado) no define ninguna variable
       # dtb= ni maneja el DTB de forma explícita - solo llama a
