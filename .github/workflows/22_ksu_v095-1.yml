@@ -1,0 +1,1918 @@
+name: "KernelSU v0.9.5 + Red-lab + BBR (prueba de modulos)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      wifi_ps_off:
+        description: "Desactivar ahorro de energia Wi-Fi POR DEFECTO del kernel (CFG80211_DEFAULT_PS). Efecto incierto y NO se puede revertir sin reflashear; deja en false salvo que quieras probarlo."
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+
+      # ============================================================
+      # 1. CHECKOUTS
+      # ============================================================
+
+      - name: Checkout kernel
+        uses: actions/checkout@v4
+        with:
+          repository: exynos7885-dev/kernel_samsung_exynos7885
+          # SHA fijo (antes: lineage-18.1). Punta usada en el build verde.
+          ref: 6020dfa8315134187f07ca903c9d2ed7ee0256f5
+          path: kernel
+          fetch-depth: 1
+
+      - name: Checkout GCC 6.4.1 toolchain
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1
+          # SHA fijo (antes: lineage-18.1).
+          ref: 16f73337b3616cfe640b0130629a9569b30482ca
+          path: toolchain/aarch64
+          fetch-depth: 1
+
+      - name: Checkout kernel donante (BFQ + WireGuard)
+        uses: actions/checkout@v4
+        with:
+          repository: prashantpaddune/android_kernel_samsung_a7y18lte
+          # SHA fijo (antes: rama por defecto, sin fijar).
+          ref: 97e4fbcdb31efe88b91cd321dae7bbaece36c51a
+          path: donor
+          fetch-depth: 1
+
+      # ============================================================
+      # 1b. DIAGNÓSTICO (no bloqueante): buscar infraestructura ya
+      #     existente en ambos árboles para touch boost y curva térmica,
+      #     antes de escribir cualquier parche a ciegas.
+      # ============================================================
+
+      # ============================================================
+      # BBR (backport de mainline 4.9 a este 4.4.302 + MPTCP de Samsung)
+      # Parche UNICO embebido (gzip+base64: el editor web no puede alterar
+      # tabs/espacios). Se aplica PRIMERO, sobre el upstream pristino, antes
+      # de cualquier otro cambio del workflow. Verificado compilando
+      # net/ipv4, net/mptcp, skbuff, tcp_ipv6 y sch_fq con GCC 6.4.1.
+      # Que incluye: serie de rate-sampling/cong_control de Google (4.6-4.9),
+      # tcp_rate.c, tcp_bbr.c, win_minmax, tp->lost, ICSK_CA_PRIV_SIZE 88 y
+      # skb->cb 72 (el estado de BBR va FUERA de la union de MPTCP).
+      # BBR queda disponible pero NO es el default (sigue cubic+fq):
+      #   net-boost-mode.sh bbr   (cc bbr + qdisc fq en wlan0)
+      # ============================================================
+
+      - name: Apply BBR backport (embedded patch)
+        working-directory: kernel
+        run: |
+          TMP="${RUNNER_TEMP:-/tmp}"
+          base64 -d <<'BBR_B64' | gunzip > "$TMP/bbr-backport.patch"
+          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
+          YAFAinQc/x8wj5DPlFYBAA==
+          BBR_B64
+          GOT=$(sha256sum "$TMP/bbr-backport.patch" | cut -d' ' -f1)
+          echo "sha256 del parche: $GOT"
+          if [ "$GOT" != "1e4d69c881547cb9bb322b8fb7682c817b51f7bb4a39ef83269f429bf573192a" ]; then
+            echo "ERROR: el parche embebido esta corrupto (sha256 distinto). Pega el YAML de nuevo."; exit 1
+          fi
+          if ! git apply --check "$TMP/bbr-backport.patch"; then
+            echo "ERROR: el parche de BBR no aplica sobre el arbol. El ref del kernel ya no es 6020dfa?"
+            git log -1 --format=%H; exit 1
+          fi
+          git apply --whitespace=nowarn "$TMP/bbr-backport.patch"
+          test -f net/ipv4/tcp_bbr.c && test -f net/ipv4/tcp_rate.c && test -f lib/win_minmax.c
+          echo "BBR backport aplicado: $(git status --short | wc -l) archivos tocados"
+          echo "BBR_STATUS=backport aplicado (4.9 -> 4.4)" >> "$GITHUB_ENV"
+
+      - name: Investigate existing input-boost and thermal infrastructure
+        run: |
+          echo "===== INPUT BOOSTER (touch boost) ====="
+          echo "--- kernel propio ---"
+          find kernel -iname "*input_boost*" -o -iname "*input_booster*" 2>/dev/null
+          grep -rn "INPUT_BOOST\|input_booster\|cpu_input_boost" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig kernel/drivers/Kconfig 2>/dev/null || echo "(sin coincidencias en defconfig/drivers Kconfig)"
+          echo "--- donante ---"
+          find donor -iname "*input_boost*" -o -iname "*input_booster*" 2>/dev/null || echo "(sin archivos en donante)"
+          echo
+          echo "===== THERMAL (trip points / step_wise) ====="
+          echo "--- kernel propio ---"
+          find kernel/drivers/thermal -maxdepth 2 -type f 2>/dev/null
+          grep -rln "trip_point\|step_wise\|set_trip_temp" kernel/drivers/thermal 2>/dev/null || echo "(sin coincidencias en drivers/thermal)"
+          echo "--- donante ---"
+          find donor/drivers/thermal -maxdepth 2 -type f 2>/dev/null || echo "(sin drivers/thermal en donante)"
+          echo
+          echo "===== INPUT BOOSTER: quién lo usa (call sites) ====="
+          echo "--- kernel propio ---"
+          grep -rl "input_booster.h\|struct input_booster\|ib_send_event\|input_booster_send_event" kernel/drivers/input 2>/dev/null || echo "(ningún driver de input lo incluye)"
+          echo
+          echo "--- Kconfig symbol INPUT_BOOSTER o SEC_INPUT_BOOSTER en cualquier parte ---"
+          grep -rn "config INPUT_BOOSTER\|config SEC_INPUT_BOOSTER\|SEC_INPUT_BOOSTER" kernel donor 2>/dev/null || echo "(ningún símbolo relacionado existe en ningún árbol)"
+          echo
+          echo "===== CONTENIDO COMPLETO de kernel/include/linux/input/input_booster.h ====="
+          cat kernel/include/linux/input/input_booster.h 2>/dev/null || echo "(el archivo no existe en esta rama/checkout)"
+          echo
+          echo "===== THERMAL: origen real de los trip points ====="
+          echo "--- exynos_tmu.c: valores hardcodeados ---"
+          grep -n "trip_temp\|THRESHOLD\|_TEMP \|TMU_DEF\|#define.*TEMP" kernel/drivers/thermal/samsung/exynos_tmu.c 2>/dev/null | head -30
+          echo "--- ¿hay exynos_tmu_data.c? ---"
+          find kernel/drivers/thermal/samsung -type f
+          echo "--- trips/cooling-maps en device tree (exynos7885) ---"
+          grep -rl "trips\|cooling-maps\|polling-delay" kernel/arch/arm64/boot/dts/exynos 2>/dev/null | grep -i "7885\|a7y18" || \
+            grep -rl "trips\|cooling-maps\|polling-delay" kernel/arch/arm64/boot/dts/exynos 2>/dev/null | head -5
+          echo "--- CONFIG_THERMAL en defconfig ---"
+          grep -n "CONFIG_THERMAL\|CONFIG_EXYNOS_THERMAL" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null
+          echo
+          echo "===== SCHEDULER: sched_migration_cost_ns / sched_wakeup_granularity_ns ====="
+          echo "--- ¿CONFIG_SCHED_DEBUG habilitado? (sin esto los sysctl no existen en runtime) ---"
+          grep -n "CONFIG_SCHED_DEBUG" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null || echo "(símbolo no encontrado en defconfig)"
+          echo "--- valores default en el fuente ---"
+          grep -rn "sysctl_sched_migration_cost\s*=\|sysctl_sched_wakeup_granularity\s*=" kernel/kernel/sched/*.c 2>/dev/null
+          echo
+          echo "===== MEMORIA: watermark_scale_factor y THP ====="
+          echo "--- ¿existe watermark_scale_factor en este árbol? (llegó a mainline en 4.6, este kernel es 4.4) ---"
+          grep -rln "watermark_scale_factor" kernel/mm kernel/kernel/sysctl.c 2>/dev/null || echo "(no existe - confirmado: feature de kernel 4.6+, no portado a este árbol 4.4)"
+          echo "--- CONFIG_TRANSPARENT_HUGEPAGE en defconfig ---"
+          grep -n "CONFIG_TRANSPARENT_HUGEPAGE" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null
+          echo "--- modo default de THP en el fuente ---"
+          grep -n "TRANSPARENT_HUGEPAGE_.*_ALWAYS\|transparent_hugepage_flags" kernel/mm/huge_memory.c 2>/dev/null | head -10
+          echo
+          echo
+          echo "===== FREQVAR_BOOST: ¿mecanismo de boost ya presente sin usar? ====="
+          echo "--- (ya sabíamos que kernel/sched/tune.h referencia freqvar_boost_data, ver fix 3.5) ---"
+          find kernel -iname "*freqvar_boost*" 2>/dev/null
+          grep -rn "config.*FREQVAR_BOOST\|FREQVAR_BOOST" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig kernel/drivers/cpufreq/Kconfig kernel/kernel/sched/Kconfig 2>/dev/null || echo "(símbolo no encontrado en Kconfigs revisados)"
+          echo
+          echo
+          echo "===== LMK: driver y minfree default (causa probable de apps recargando desde cero) ====="
+          echo "--- ¿ANDROID_LOW_MEMORY_KILLER en defconfig? ---"
+          grep -n "CONFIG_ANDROID_LOW_MEMORY_KILLER\|CONFIG_MEMCG\|CONFIG_MEMCG_SWAP" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null
+          echo "--- ubicación del driver LMK en el árbol ---"
+          find kernel/drivers -iname "*lowmemorykiller*" -o -iname "*lmk*" 2>/dev/null
+          echo "--- minfree/adj default hardcodeado en el driver, si existe ---"
+          grep -rn "lowmem_minfree\[\]\|lowmem_adj\[\]\|lowmem_minfree_size\|def_minfree\|LMK_.*_ADJ" kernel/drivers 2>/dev/null | head -20
+          echo
+          echo "===== BFQ: low_latency (prioridad rápida a foreground al lanzar apps) ====="
+          grep -n "low_latency" kernel/block/bfq-iosched.c 2>/dev/null | head -10
+          echo
+          echo "===== GPU: reconciliar gpu_max_clock (DTS) vs techo ASV confirmado (1196000) ====="
+          echo "--- archivos DTS con gpu_max_clock, filtrados a 7885 explícito (no 7884) ---"
+          grep -rl "gpu_max_clock" kernel/arch/arm64/boot/dts 2>/dev/null | grep "7885" || echo "(sin candidatos filtrados a 7885)"
+          echo "--- candidatos SIN filtrar, por si hay ambigüedad 7884 vs 7885 ---"
+          grep -rl "gpu_max_clock" kernel/arch/arm64/boot/dts 2>/dev/null
+          echo "--- valor real de gpu_max_clock en cada candidato ---"
+          grep -rn "gpu_max_clock" kernel/arch/arm64/boot/dts 2>/dev/null
+          echo "===== GPU: gobernador DVFS del Mali (umbral de carga) ====="
+          find kernel/drivers/gpu/arm -iname "*platform*" -o -iname "*dvfs*" 2>/dev/null | head -20
+          grep -rln "upthreshold\|downthreshold\|utilisation\|simple_ondemand" kernel/drivers/gpu/arm 2>/dev/null | head -10
+          echo "--- contenido real: umbrales/carga en gpu_dvfs_governor.c ---"
+          grep -n "threshold\|utilization\|load\s*[<>]\|#define.*UP\|#define.*DOWN" kernel/drivers/gpu/arm/tMIx/r10p0/platform/exynos/gpu_dvfs_governor.c 2>/dev/null | head -40
+          echo "--- ¿otras versiones de driver además de r10p0/r3p0? ---"
+          find kernel/drivers/gpu/arm -maxdepth 2 -type d 2>/dev/null
+        continue-on-error: true
+
+      # ============================================================
+      # 1c. DIAGNÓSTICO (no bloqueante): valores REALES de los arrays
+      #     lowmem_adj[]/lowmem_minfree[] del LMK (no solo su ubicación,
+      #     ya confirmada en corrida anterior: drivers/staging/android/
+      #     lowmemorykiller.c, lowmem_minfree_size=4). Sin esto, cualquier
+      #     minfree propuesto sería adivinar sobre 4 niveles de los que no
+      #     conocemos ni los KB ni el oom_adj real de cada uno.
+      #     También repite el grep de "low_latency" en BFQ pero DESPUÉS
+      #     de portarlo del donante (el step 1b corría ANTES de que el
+      #     archivo existiera en el árbol, por eso salió vacío el 2026-09-14).
+      # ============================================================
+
+      - name: Diagnose real LMK minfree/adj arrays and BFQ low_latency (post-donor)
+        run: |
+          echo "===== LMK: contenido real de los arrays default (kernel propio) ====="
+          grep -n -B2 -A20 "static.*lowmem_adj\[\]\|static.*lowmem_minfree\[\]\|lowmem_adj\[6\]\|lowmem_minfree\[6\]\|lowmem_adj\[4\]\|lowmem_minfree\[4\]" kernel/drivers/staging/android/lowmemorykiller.c 2>/dev/null || echo "(sin coincidencias con esos patrones - probar con menos contexto abajo)"
+          echo "--- fallback: cualquier línea con 'lowmem_adj' o 'lowmem_minfree' (declaración o uso) ---"
+          grep -n "lowmem_adj\|lowmem_minfree" kernel/drivers/staging/android/lowmemorykiller.c 2>/dev/null
+          echo "--- valores por defecto en runtime (module_param_array), si vienen seteados en el mismo archivo ---"
+          grep -n -B2 -A5 "module_param_array_named" kernel/drivers/staging/android/lowmemorykiller.c 2>/dev/null
+          echo
+          echo "===== BFQ low_latency: repetido DESPUÉS del checkout, sobre el donante directo (no espera al step de port) ====="
+          grep -n -B3 -A20 "low_latency" donor/block/bfq-iosched.c 2>/dev/null || echo "(sin coincidencias en donor/block/bfq-iosched.c - confirmar ruta real)"
+        continue-on-error: true
+
+      # ============================================================
+      # 1d. DIAGNÓSTICO (no bloqueante): estado real de F2FS - qué está
+      #     compilado hoy (defconfig propio) vs qué opciones existen en
+      #     el Kconfig del propio árbol (compiladas o no) vs qué trae el
+      #     donante (por si ya backporteó algo más nuevo, mismo patrón
+      #     que se usó para BFQ/WireGuard). Kernel 4.4.302 es de una era
+      #     de F2FS sin compresión/ATGC (eso llegó en 5.x) - hay que ver
+      #     con qué versión real se trabaja antes de proponer nada.
+      # ============================================================
+
+      - name: Investigate real F2FS support (own tree vs donor)
+        run: |
+          echo "===== F2FS: opciones activas HOY en el defconfig propio ====="
+          grep -n "F2FS" kernel/arch/arm64/configs/lineage_a7y18lte_defconfig 2>/dev/null || echo "(ninguna opción F2FS en el defconfig)"
+          echo
+          echo "===== F2FS: TODAS las opciones que existen en el Kconfig del árbol propio (compiladas o no) ====="
+          find kernel/fs/f2fs -maxdepth 1 -type f 2>/dev/null
+          grep -n "^config F2FS" kernel/fs/f2fs/Kconfig 2>/dev/null || echo "(no existe fs/f2fs/Kconfig en este árbol - F2FS podría no estar portado)"
+          echo
+          echo "===== F2FS: versión aproximada (buscar firma de features conocidas: compresión, ATGC, extent cache) ====="
+          grep -rn "F2FS_FS_COMPRESSION\|F2FS_FS_LZ4\|F2FS_FS_ZSTD\|COMPRESS_EXT" kernel/fs/f2fs/Kconfig 2>/dev/null || echo "(sin soporte de compresión visible - esperado en un backport 4.4)"
+          grep -rln "extent_cache\|f2fs_extent" kernel/fs/f2fs 2>/dev/null | head -5
+          echo
+          echo "===== F2FS: mismo chequeo contra el donante (¿trae algo más nuevo para portar?) ====="
+          find donor/fs/f2fs -maxdepth 1 -type f 2>/dev/null || echo "(el donante no trae fs/f2fs en absoluto)"
+          grep -n "F2FS" donor/arch/arm64/configs/*defconfig* 2>/dev/null | head -40
+          echo
+          echo "===== F2FS: sysfs tunables ya existentes en el driver propio (para tuning en runtime, no Kconfig) ====="
+          grep -rln "f2fs_attr\|F2FS_RW_ATTR\|F2FS_GENERAL_RO_ATTR" kernel/fs/f2fs 2>/dev/null
+        continue-on-error: true
+
+      # ============================================================
+      # 2. DEPENDENCIAS
+      # ============================================================
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libncurses-dev \
+            git-core \
+            zip \
+            gcc-arm-linux-gnueabi
+      # ============================================================
+      # 3. FIXES BASE (obligatorios)
+      # ============================================================
+
+      - name: Fix decon_clocks_table
+        working-directory: kernel
+        run: |
+          sed -i 's/^const double decon_clocks_table/const unsigned long decon_clocks_table/' \
+            drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
+          grep -n "^const unsigned long decon_clocks_table" drivers/video/fbdev/exynos/dpu_7885/decon_reg.c
+      - name: Fix topology.c warning
+        working-directory: kernel
+        run: |
+          sed -i 's/if (strlen(CONFIG_HMP_FAST_CPU_MASK)) (strlen(CONFIG_HMP_SLOW_CPU_MASK)); {/if (strlen(CONFIG_HMP_FAST_CPU_MASK) \&\& strlen(CONFIG_HMP_SLOW_CPU_MASK)) {/' \
+            arch/arm64/kernel/topology.c
+          grep -n "strlen(CONFIG_HMP_FAST_CPU_MASK)" arch/arm64/kernel/topology.c
+      - name: Fix nl80211 country_code
+        working-directory: kernel
+        run: |
+          sed -i 's/char country_code\[SLSI_COUNTRY_CODE_LEN\];/char country_code[SLSI_COUNTRY_CODE_LEN] = {0};/' \
+            drivers/net/wireless/scsc/nl80211_vendor.c
+          grep -n "char country_code\[SLSI_COUNTRY_CODE_LEN\]" drivers/net/wireless/scsc/nl80211_vendor.c
+      # ============================================================
+      # 4. FIX sched/tune.h
+      # ============================================================
+
+      - name: Fix sched/tune.h - forward declare cpufreq_policy and freqvar_boost_data
+        working-directory: kernel
+        run: |
+          ANCHOR='static inline int schedtune_freqvar_boost_init'
+          if ! grep -qF "$ANCHOR" kernel/sched/tune.h; then
+            echo "ERROR: no se encontró la línea ancla '$ANCHOR' en kernel/sched/tune.h."
+            head -n 40 kernel/sched/tune.h
+            exit 1
+          fi
+          if ! grep -q "^struct cpufreq_policy;" kernel/sched/tune.h; then
+            sed -i "/$ANCHOR/i struct cpufreq_policy;" kernel/sched/tune.h
+          fi
+          if ! grep -q "^struct freqvar_boost_data;" kernel/sched/tune.h; then
+            sed -i "/$ANCHOR/i struct freqvar_boost_data;" kernel/sched/tune.h
+          fi
+          grep -n "struct cpufreq_policy;" kernel/sched/tune.h
+          grep -n "struct freqvar_boost_data;" kernel/sched/tune.h
+      # ============================================================
+      # 5. TCP CUBIC (fix: selección de choice)
+      # ============================================================
+
+      - name: Set default TCP congestion control to cubic
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          # Eliminar selecciones previas de la choice
+          sed -i '/^CONFIG_DEFAULT_BIC/d;/^CONFIG_DEFAULT_RENO/d;/^CONFIG_DEFAULT_WESTWOOD/d;/^CONFIG_DEFAULT_VEGAS/d;/^CONFIG_DEFAULT_HTCP/d;/^CONFIG_DEFAULT_TCP_CONG/d' "$DEFCONFIG"
+          # Asegurar que cubic esté compilado
+          grep -q "^CONFIG_TCP_CONG_CUBIC=y" "$DEFCONFIG" || echo "CONFIG_TCP_CONG_CUBIC=y" >> "$DEFCONFIG"
+          # Seleccionar cubic en la choice
+          echo "CONFIG_DEFAULT_CUBIC=y" >> "$DEFCONFIG"
+          grep -n "CONFIG_DEFAULT_CUBIC\|CONFIG_TCP_CONG_CUBIC" "$DEFCONFIG"
+      # ============================================================
+      # 6. SCHEDUTIL (compilado + gobernador por defecto)
+      # ============================================================
+
+      - name: Enable schedutil governor and set as default
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          # Habilitar schedutil
+          if grep -q "^# CONFIG_CPU_FREQ_GOV_SCHEDUTIL is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_CPU_FREQ_GOV_SCHEDUTIL is not set/CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y/' "$DEFCONFIG"
+          else
+            echo "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" "$DEFCONFIG" || { echo "ERROR: schedutil no activado"; exit 1; }
+          # Activar FREQVAR_SCHEDTUNE (necesario para cpufreq_schedutil.c)
+          if grep -q "^# CONFIG_FREQVAR_SCHEDTUNE is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_FREQVAR_SCHEDTUNE is not set/CONFIG_FREQVAR_SCHEDTUNE=y/' "$DEFCONFIG"
+          else
+            echo "CONFIG_FREQVAR_SCHEDTUNE=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_FREQVAR_SCHEDTUNE=y" "$DEFCONFIG" || { echo "ERROR: FREQVAR_SCHEDTUNE no activado"; exit 1; }
+          # Hacer schedutil el gobernador por defecto (quitar interactive)
+          sed -i '/^CONFIG_CPU_FREQ_DEFAULT_GOV_INTERACTIVE/d;/^CONFIG_CPU_FREQ_DEFAULT_GOV_PERFORMANCE/d;/^CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND/d;/^CONFIG_CPU_FREQ_DEFAULT_GOV_CONSERVATIVE/d;/^CONFIG_CPU_FREQ_DEFAULT_GOV_POWERSAVE/d;/^CONFIG_CPU_FREQ_DEFAULT_GOV_USERSPACE/d' "$DEFCONFIG"
+          echo "CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y" >> "$DEFCONFIG"
+          grep -n "CONFIG_CPU_FREQ_DEFAULT_GOV" "$DEFCONFIG"
+      # ============================================================
+      # 7. Fix arch_scale_freq_invariant (necesario para schedutil en 4.4)
+      # ============================================================
+
+      - name: Fix arch_scale_freq_invariant for schedutil
+        working-directory: kernel
+        run: |
+          FILE=kernel/sched/cpufreq_schedutil.c
+          if ! grep -q "^#define arch_scale_freq_invariant" "$FILE"; then
+            if ! grep -qF '#include "sched.h"' "$FILE"; then
+              echo "ERROR: no se encontró '#include \"sched.h\"' en $FILE"
+              head -n 25 "$FILE"
+              exit 1
+            fi
+            sed -i '/^#include "sched.h"/a #ifndef arch_scale_freq_invariant\n#define arch_scale_freq_invariant() false\n#endif' "$FILE"
+          fi
+          grep -q "^#define arch_scale_freq_invariant" "$FILE" || { echo "ERROR: no se añadió arch_scale_freq_invariant"; exit 1; }
+      # ============================================================
+      # 7a1. FREQVAR_SCHEDTUNE: cpufreq_schedutil.c ya llama a
+      #      schedtune_freqvar_boost_init/exit() SIN ifdef (confirmado por
+      #      hallazgo cruzado con otra sesión de trabajo sobre el mismo
+      #      árbol) - sin este symbol, esas funciones son stubs vacíos.
+      #      Habilita el mecanismo de boost de CPU nativo de Samsung
+      #      integrado en schedutil (alternativa/complemento al input booster).
+      #      NOTA (verificado en sesión posterior): compila y es seguro,
+      #      pero el nodo de device tree "schedtune-freqvar" que necesita
+      #      para hacer algo NO existe en exynos7885.dtsi - queda activado
+      #      pero inerte en este dispositivo hasta que alguien agregue ese
+      #      nodo. No es un bug, solo no hace nada todavía.
+      # ============================================================
+
+      - name: Enable FREQVAR_SCHEDTUNE (native Samsung CPU boost in schedutil)
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_FREQVAR_SCHEDTUNE is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_FREQVAR_SCHEDTUNE is not set/CONFIG_FREQVAR_SCHEDTUNE=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_FREQVAR_SCHEDTUNE=y" "$DEFCONFIG" || echo "CONFIG_FREQVAR_SCHEDTUNE=y" >> "$DEFCONFIG"
+          fi
+          grep -n "CONFIG_FREQVAR_SCHEDTUNE" "$DEFCONFIG" || echo "AVISO: símbolo no encontrado tras el intento - puede no existir en este árbol, revisar log de compilación"
+      # ============================================================
+      # 7a2. Thermal: trip points escribibles en runtime (confirmado que
+      #      vienen del device tree, symbol estándar de Linux, bajo riesgo)
+      # ============================================================
+
+      - name: Enable writable thermal trip points
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_THERMAL_WRITABLE_TRIPS is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_THERMAL_WRITABLE_TRIPS is not set/CONFIG_THERMAL_WRITABLE_TRIPS=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_THERMAL_WRITABLE_TRIPS=y" "$DEFCONFIG" || echo "CONFIG_THERMAL_WRITABLE_TRIPS=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_THERMAL_WRITABLE_TRIPS=y" "$DEFCONFIG" || { echo "ERROR: THERMAL_WRITABLE_TRIPS no activado"; exit 1; }
+          grep -n "CONFIG_THERMAL_WRITABLE_TRIPS" "$DEFCONFIG"
+      # ============================================================
+      # 7a3. Transparent Huge Pages: activar (estaba completamente
+      #      deshabilitado, symbol estándar de Linux, bajo riesgo)
+      # ============================================================
+
+      - name: Enable Transparent Huge Pages
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_TRANSPARENT_HUGEPAGE is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_TRANSPARENT_HUGEPAGE is not set/CONFIG_TRANSPARENT_HUGEPAGE=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_TRANSPARENT_HUGEPAGE=y" "$DEFCONFIG" || echo "CONFIG_TRANSPARENT_HUGEPAGE=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_TRANSPARENT_HUGEPAGE=y" "$DEFCONFIG" || { echo "ERROR: THP no activado"; exit 1; }
+          # mm/Kconfig tiene una choice separada de default sysfs para THP.
+          # Sin fijarla, queda en "always" (mayor consumo de RAM sin garantía
+          # de beneficio) en vez de "madvise" (más seguro, solo apps que lo
+          # piden explícitamente lo usan) - hallazgo cruzado con otra sesión.
+          sed -i '/^CONFIG_TRANSPARENT_HUGEPAGE_ALWAYS/d' "$DEFCONFIG"
+          echo "CONFIG_TRANSPARENT_HUGEPAGE_MADVISE=y" >> "$DEFCONFIG"
+          grep -n "CONFIG_TRANSPARENT_HUGEPAGE" "$DEFCONFIG"
+      # ============================================================
+      # 7a4. FIX CRÍTICO: bug real en fs/proc/task_mmu.c, nunca antes
+      #      compilado con THP siempre desactivado (hallazgo cruzado con
+      #      otra sesión, confirmado con error real de GCC). reclaim_pte_range()
+      #      (feature propia de Samsung) llama split_huge_page_pmd(vma, pmd, addr)
+      #      pero la macro espera (vma, address, pmd) - argumentos invertidos.
+      #      Sin este fix, el build FALLA ahora que activamos THP arriba:
+      #      "fs/proc/task_mmu.c:1570:27: error: passing argument 2 of
+      #       '__split_huge_page_pmd' makes integer from pointer without a cast"
+      # ============================================================
+
+      - name: Fix swapped arguments in reclaim_pte_range (task_mmu.c)
+        working-directory: kernel
+        run: |
+          FILE=fs/proc/task_mmu.c
+          if ! grep -q "split_huge_page_pmd(vma, pmd, addr);" "$FILE"; then
+            echo "ERROR: no se encontró la línea esperada en $FILE (¿cambió el código fuente?)"
+            grep -n "split_huge_page_pmd" "$FILE"
+            exit 1
+          fi
+          sed -i 's/split_huge_page_pmd(vma, pmd, addr);/split_huge_page_pmd(vma, addr, pmd);/' "$FILE"
+          grep -n "split_huge_page_pmd(vma, addr, pmd);" "$FILE" || { echo "ERROR: no se aplicó el fix"; exit 1; }
+      # ============================================================
+      # 7b. fq qdisc (símbolo ya existente en este árbol 4.4, confirmado
+      #     por build anterior - CONFIG_NET_SCH_FQ=y en línea 998)
+      # ============================================================
+
+      - name: Enable fq qdisc
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_NET_SCH_FQ is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_NET_SCH_FQ is not set/CONFIG_NET_SCH_FQ=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_NET_SCH_FQ=y" "$DEFCONFIG" || echo "CONFIG_NET_SCH_FQ=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_NET_SCH_FQ=y" "$DEFCONFIG" || { echo "ERROR: fq qdisc no activado"; exit 1; }
+          grep -n "CONFIG_NET_SCH_FQ" "$DEFCONFIG"
+      # ============================================================
+      # 7b2. TCP BBR - PORT CONDICIONAL desde el donante
+      #      BBR llegó al kernel mainline en Linux 4.9 (net/ipv4/tcp_bbr.c),
+      #      este árbol es 4.4.302 y NO trae el símbolo Kconfig por defecto.
+      #      Si el donante lo tiene backporteado, se copia y se activa.
+      #      Si no, se omite SIN FALLAR el build (evita el error visto antes).
+      # ============================================================
+
+      - name: Enable BBR in defconfig (the patch is already applied)
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          sed -i '/^# CONFIG_TCP_CONG_BBR is not set/d;/^CONFIG_TCP_CONG_BBR=/d' "$DEFCONFIG"
+          echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
+          grep -q "^CONFIG_TCP_CONG_ADVANCED=y" "$DEFCONFIG" || echo "CONFIG_TCP_CONG_ADVANCED=y" >> "$DEFCONFIG"
+          grep -E "^CONFIG_(TCP_CONG_BBR|TCP_CONG_ADVANCED|DEFAULT_CUBIC|NET_SCH_FQ)" "$DEFCONFIG" | sort
+
+      # ============================================================
+      # 7b3. RED-LAB: opciones de red experimentales (SOLO configuracion)
+      #      Nada cambia por defecto: cubic + fq siguen igual. Lo nuevo se
+      #      elige en runtime (sysctl / tc) desde net-boost-mode.sh y bench-a7.sh.
+      #      Si alguna opcion no resuelve por dependencias, NO falla: queda
+      #      registrada en el informe "redlab-status" del paso Compile.
+      # ============================================================
+
+      - name: Red-lab - extra TCP algorithms, qdiscs, USB ethernet drivers and net diagnostics
+        working-directory: kernel
+        env:
+          WIFI_PS_OFF: ${{ inputs.wifi_ps_off }}
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          RL_TCP="TCP_CONG_CDG TCP_CONG_VEGAS TCP_CONG_VENO TCP_CONG_ILLINOIS TCP_CONG_YEAH TCP_CONG_HYBLA TCP_CONG_HSTCP TCP_CONG_SCALABLE TCP_CONG_LP"
+          RL_QDISC="NET_SCH_FQ_CODEL NET_SCH_CODEL NET_SCH_PIE NET_SCH_SFQ NET_SCH_NETEM NET_SCH_TBF"
+          RL_USB="USB_NET_RNDIS_HOST USB_LAN78XX USB_NET_DM9601 USB_NET_SR9700 USB_NET_MCS7830"
+          RL_DIAG="NET_PKTGEN NET_DROP_MONITOR"
+          echo "$RL_TCP $RL_QDISC $RL_USB $RL_DIAG" > "$GITHUB_WORKSPACE/redlab-opts.txt"
+          set_y() {
+            sed -i "/^# CONFIG_$1 is not set/d;/^CONFIG_$1=/d" "$DEFCONFIG"
+            echo "CONFIG_$1=y" >> "$DEFCONFIG"
+          }
+          for o in $(cat "$GITHUB_WORKSPACE/redlab-opts.txt"); do set_y "$o"; done
+          # Los algoritmos extra requieren TCP_CONG_ADVANCED (ya activo) y el default sigue siendo cubic
+          grep -q "^CONFIG_TCP_CONG_ADVANCED=y" "$DEFCONFIG" || echo "CONFIG_TCP_CONG_ADVANCED=y" >> "$DEFCONFIG"
+          if [ "$WIFI_PS_OFF" = "true" ]; then
+            sed -i 's/^CONFIG_CFG80211_DEFAULT_PS=y/# CONFIG_CFG80211_DEFAULT_PS is not set/' "$DEFCONFIG"
+            echo "WIFI_PS=desactivado (input wifi_ps_off=true)" >> "$GITHUB_ENV"
+          else
+            echo "WIFI_PS=por defecto del kernel (sin cambios)" >> "$GITHUB_ENV"
+          fi
+          echo "Opciones red-lab escritas en el defconfig:"
+          grep -E "^CONFIG_(TCP_CONG_|NET_SCH_|USB_NET_RNDIS_HOST|USB_LAN78XX|USB_NET_DM9601|USB_NET_SR9700|USB_NET_MCS7830|NET_PKTGEN|NET_DROP_MONITOR|DEFAULT_CUBIC|CFG80211_DEFAULT_PS)" "$DEFCONFIG" | sort
+      # ============================================================
+      # 7c. KSM (Kernel Samepage Merging) - dedup de páginas de memoria
+      # ============================================================
+
+      - name: Enable KSM
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_KSM is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_KSM is not set/CONFIG_KSM=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_KSM=y" "$DEFCONFIG" || echo "CONFIG_KSM=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_KSM=y" "$DEFCONFIG" || { echo "ERROR: KSM no activado"; exit 1; }
+          grep -n "CONFIG_KSM" "$DEFCONFIG"
+      # ============================================================
+      # 8b. UKSM - reemplazo de KSM con deduplicacion mas agresiva
+      # Step aislado a proposito: si algo de esto falla, queremos que
+      # falle aca mismo (con diagnostico claro) y no a mitad de la
+      # compilacion general. Repetir esta corrida en un runner limpio
+      # antes de confiar en el resultado si el runner se queda sin
+      # espacio en disco (REGLA 10 del contexto del proyecto).
+      # ============================================================
+
+      - name: Apply UKSM patch (isolated, verify before trusting on low disk space)
+        working-directory: kernel
+        run: |
+          echo "DESACTIVADO TEMPORALMENTE 2026-09-13 - decision consciente, no bloqueo tecnico."
+          echo "Se prioriza dejar TTL/HL y USB fast charge en produccion sin arrastrar el"
+          echo "riesgo de UKSM. Retomar cuando haya tiempo dedicado aparte (ver inventario)."
+          echo "skip"
+      # ============================================================
+      # INVENTARIO REAL PARA RETOMAR UKSM (no borrar este bloque)
+      # ============================================================
+      # Confirmado esta sesion: el hook de mm/mmap.c (vma_adjust) SI
+      # matchea y aplica limpio contra el texto real de este arbol
+      # (vm_end_gap(vma), post backport "larger stack guard gap").
+      # Pero compilar reveló que faltan piezas mas grandes de lo asumido:
+      #
+      #   - include/linux/uksm.h NO EXISTE en este arbol - hay que
+      #     crearlo completo (149 lineas, contenido real ya extraido de
+      #     uksm-4.9.patch en esta sesion). Sin esto, "uksm_vma_add_new"
+      #     no tiene declaracion visible (implicit-function-declaration).
+      #   - include/linux/mm_types.h necesita el campo nuevo
+      #     "uksm_vma_slot" en struct vm_area_struct (usado por
+      #     uksm_cow_page/uksm_cow_pte dentro del header de arriba).
+      #   - kernel/fork.c (dup_mmap) necesita su propio hook
+      #     uksm_vma_add_new(tmp), ademas del include del header.
+      #   - mm/mmap.c necesita el #include <linux/uksm.h> (hoy no lo
+      #     incluye en absoluto).
+      #
+      # El patch real completo (dolohow/uksm, v4.x/uksm-4.9.patch, el mas
+      # cercano probado contra este arbol 4.4.302) toca 19 archivos:
+      #   Documentation/vm/00-INDEX, Documentation/vm/uksm.txt, fs/exec.c,
+      #   fs/proc/meminfo.c, include/asm-generic/pgtable.h,
+      #   include/linux/ksm.h, include/linux/mm_types.h,
+      #   include/linux/mmzone.h, include/linux/sradix-tree.h (nuevo),
+      #   include/linux/uksm.h (nuevo), kernel/fork.c, lib/Makefile,
+      #   lib/sradix-tree.c (nuevo), mm/Kconfig, mm/Makefile, mm/memory.c,
+      #   mm/mmap.c, mm/rmap.c, mm/uksm.c (nuevo, ~5586 lineas - el
+      #   algoritmo completo), mm/vmstat.c.
+      #
+      # Ninguno de estos 19 (salvo el hook de mmap.c ya confirmado) se ha
+      # verificado contra el texto real de este arbol todavia. Retomar
+      # significa ir hunk por hunk, igual que se hizo con mmap.c, antes
+      # de asumir que alguno aplica tal cual.
+
+      # ============================================================
+      # Diagnostico puro (no bloqueante, no adivina): texto REAL de la
+      # zona de vma_adjust() que los 2 intentos de UKSM no pudieron
+      # matchear. Sin esto, un tercer intento seria la misma apuesta que
+      # ya fallo 2 veces.
+      # ============================================================
+
+      - name: Diagnose real content of vma_adjust() for UKSM (non-fatal)
+        working-directory: kernel
+        run: |
+          echo "===== Contexto real alrededor de 'highest_vm_end' en mm/mmap.c ====="
+          grep -n -B5 -A5 "highest_vm_end" mm/mmap.c
+          echo
+          echo "===== Contexto real alrededor de 'uprobe_mmap(insert)' en mm/mmap.c ====="
+          grep -n -B3 -A6 "uprobe_mmap(insert)" mm/mmap.c
+          echo
+          echo "===== ¿existe VM_WARN_ON en este archivo? ====="
+          grep -n "VM_WARN_ON" mm/mmap.c || echo "(no existe ninguna ocurrencia)"
+          echo
+          echo "===== version exacta de este kernel (para descartar backport por fecha) ====="
+          grep -n "^VERSION\|^PATCHLEVEL\|^SUBLEVEL" Makefile | head -3
+      # ============================================================
+      # 8c. TTL/HL spoofing (netfilter xt_HL) - ya verificado en clon de
+      # prueba, esto lo lleva al workflow de produccion.
+      # ============================================================
+
+      - name: Enable TTL/HL spoofing (NETFILTER_XT_TARGET_HL)
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_NETFILTER_XT_TARGET_HL is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_NETFILTER_XT_TARGET_HL is not set/CONFIG_NETFILTER_XT_TARGET_HL=y/' "$DEFCONFIG"
+          else
+            grep -q "^CONFIG_NETFILTER_XT_TARGET_HL=y" "$DEFCONFIG" || echo "CONFIG_NETFILTER_XT_TARGET_HL=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_NETFILTER_XT_TARGET_HL=y" "$DEFCONFIG" || { echo "ERROR: TTL/HL no activado"; exit 1; }
+          grep -n "CONFIG_NETFILTER_XT_TARGET_HL" "$DEFCONFIG"
+      # ============================================================
+      # 8b. USB Fast Charge - separar cable_number=4 (USB, SEC_BATTERY_
+      # CABLE_USB) de current_group_1 en su propio grupo, subiendo SOLO
+      # ese cable de 500mA a 900mA (punto de partida moderado, confirmado
+      # con el usuario - hay margen fisico: default_charging_current del
+      # dispositivo es 1800mA). El resto de current_group_1
+      # (1/19/21/22/23/30: NONE/PDIC/OTG/LAN_HUB/POWER_SHARING/TIMEOUT)
+      # queda intacto en 500mA, sin tocar.
+      # ============================================================
+
+      - name: Enable USB fast charge (cable_number=4 only, 500mA -> 900mA)
+        working-directory: kernel
+        run: |
+          F=$(grep -rl "cable_number = <1 4 19 21 22 23 30>;" arch/arm64/boot/dts 2>/dev/null | grep "a7y18lte")
+          COUNT=$(echo "$F" | grep -c . || true)
+          if [ -z "$F" ] || [ "$COUNT" != "1" ]; then
+            echo "ERROR: no se encontro exactamente 1 archivo con el grupo cable_number esperado, filtrado a a7y18lte."
+            echo "Candidatos filtrados ($COUNT encontrados):"
+            echo "$F"
+            echo "Candidatos SIN filtrar (por si el nombre de archivo cambio):"
+            grep -rl "cable_number = <1 4 19 21 22 23 30>;" arch/arm64/boot/dts 2>/dev/null
+            exit 1
+          fi
+          echo "Archivo encontrado: $F"
+          cp "$F" "$F.orig"
+          # 1. Sacar el cable 4 (USB) del grupo original
+          sed -i 's/cable_number = <1 4 19 21 22 23 30>;/cable_number = <1 19 21 22 23 30>;/' "$F"
+          # 2. Insertar un grupo nuevo solo para USB, justo despues del
+          # cierre de current_group_11 (el ultimo grupo existente), con
+          # la misma indentacion real del archivo (tabs: 2 para el grupo,
+          # 3 para las propiedades).
+          awk '
+            { print }
+            /cable_number = <29>;/ { in_block = 1 }
+            in_block && /};/ {
+              print ""
+              print "\t\tcurrent_group_12 {"
+              print "\t\t\tcable_number = <4>;"
+              print "\t\t\tinput_current = <900>;"
+              print "\t\t\tcharging_current = <900>;"
+              print "\t\t};"
+              in_block = 0
+            }
+          ' "$F" > "$F.tmp" && mv "$F.tmp" "$F"
+          # 3. Verificacion (Regla 8): exactamente 1 coincidencia de cada
+          # cambio, y el resto del archivo intacto salvo estas 2 ediciones.
+          [ "$(grep -c 'cable_number = <1 19 21 22 23 30>;' "$F")" = "1" ] || { echo "ERROR: grupo original no quedo como se esperaba"; diff "$F.orig" "$F"; exit 1; }
+          [ "$(grep -c 'current_group_12 {' "$F")" = "1" ] || { echo "ERROR: grupo nuevo no se inserto"; diff "$F.orig" "$F"; exit 1; }
+          [ "$(grep -c 'cable_number = <4>;' "$F")" = "1" ] || { echo "ERROR: cable_number=4 no quedo aislado correctamente"; diff "$F.orig" "$F"; exit 1; }
+          grep -A2 "current_group_12 {" "$F" | grep -q "input_current = <900>;" || { echo "ERROR: input_current del grupo nuevo no es 900"; exit 1; }
+          grep -A3 "current_group_12 {" "$F" | grep -q "charging_current = <900>;" || { echo "ERROR: charging_current del grupo nuevo no es 900"; exit 1; }
+          # Los otros 10 grupos no deben haber cambiado
+          for cn in "cable_number = <2 25>;" "cable_number = <5>;" "cable_number = <6 7 8>;" "cable_number = <9>;" "cable_number = <10 12 14 15 27>;" "cable_number = <13>;" "cable_number = <24>;" "cable_number = <26>;" "cable_number = <11 16 28>;" "cable_number = <29>;"; do
+            grep -qF "$cn" "$F" || { echo "ERROR: un grupo existente cambio inesperadamente ($cn)"; diff "$F.orig" "$F"; exit 1; }
+          done
+          echo "--- Diff completo aplicado ---"
+          diff "$F.orig" "$F" || true
+          rm "$F.orig"
+
+      # ============================================================
+      # 8a. DIAGNOSTICO: estructura real para insertar nodos
+      #     freqvar-boost (schedtune-freqvar). NO inserta nada todavia -
+      #     solo confirma el archivo y el punto de insercion seguro antes
+      #     de tocar sintaxis DTS (el compilador dtc es estricto, un nodo
+      #     mal anidado rompe la compilacion).
+      # ============================================================
+
+      - name: Diagnose real DT structure for freqvar-boost node insertion (non-fatal)
+        working-directory: kernel
+        continue-on-error: true
+        run: |
+          echo "===== 1. ¿Dónde vive el nodo 'cpus {' de verdad? ====="
+          grep -rn "cpus {" arch/arm64/boot/dts/exynos/*.dtsi arch/arm64/boot/dts/exynos/*.dts 2>/dev/null
+
+          echo
+          echo "===== 2. Contexto completo alrededor de cpu7 (BIG) y su cierre ====="
+          F_CPUS=$(grep -rl "compatible = \"arm,cortex-a73\"" arch/arm64/boot/dts/exynos/*.dtsi arch/arm64/boot/dts/exynos/*.dts 2>/dev/null | head -1)
+          echo "Archivo: $F_CPUS"
+          if [ -n "$F_CPUS" ]; then
+            grep -n "cpu7\|cortex-a73" "$F_CPUS"
+            echo "--- 40 líneas después de la última referencia a cpu7 ---"
+            LINE=$(grep -n "cortex-a73" "$F_CPUS" | tail -1 | cut -d: -f1)
+            sed -n "${LINE},$((LINE+40))p" "$F_CPUS" | cat -n
+          fi
+
+          echo
+          echo "===== 3. ¿Ya existe algún nodo 'schedtune-freqvar' o 'device_type = \"cpufreq-domain\"' como referencia de formato? ====="
+          grep -rn "schedtune-freqvar\|device_type = \"cpufreq-domain\"" arch/arm64/boot/dts/exynos/*.dtsi arch/arm64/boot/dts/exynos/*.dts 2>/dev/null | head -10
+
+          echo
+          echo "===== 4. Confirmar que el archivo del USB fast charge (cable_number) es o no el mismo que el de cpus ====="
+          F_USB=$(grep -rl "cable_number = <1 4 19 21 22 23 30>;\|cable_number = <1 19 21 22 23 30>;" arch/arm64/boot/dts/exynos/*.dtsi arch/arm64/boot/dts/exynos/*.dts 2>/dev/null | grep "a7y18lte")
+          echo "Archivo USB: $F_USB"
+          echo "¿Es el mismo que el de cpus?: $([ "$F_USB" = "$F_CPUS" ] && echo SI || echo NO)"
+
+      # ============================================================
+      # 8. ZRAM: activar lz4 (zstd no soportado en este kernel 4.4)
+      # ============================================================
+
+      - name: Enable lz4 compression for zram (zstd no compatible)
+        working-directory: kernel
+        run: |
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          # Activar lz4 (el único backend adicional soportado por zram en 4.4)
+          if grep -q "^# CONFIG_ZRAM_LZ4_COMPRESS is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_ZRAM_LZ4_COMPRESS is not set/CONFIG_ZRAM_LZ4_COMPRESS=y/' "$DEFCONFIG"
+          else
+            echo "CONFIG_ZRAM_LZ4_COMPRESS=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_ZRAM_LZ4_COMPRESS=y" "$DEFCONFIG" || { echo "ERROR: ZRAM_LZ4_COMPRESS no activado"; exit 1; }
+          # También mantener CONFIG_CRYPTO_ZSTD (aunque no funcione con zram, puede ser útil para otros usos)
+          if grep -q "^# CONFIG_CRYPTO_ZSTD is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_CRYPTO_ZSTD is not set/CONFIG_CRYPTO_ZSTD=y/' "$DEFCONFIG"
+          else
+            echo "CONFIG_CRYPTO_ZSTD=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_CRYPTO_ZSTD=y" "$DEFCONFIG" || { echo "ERROR: ZSTD no activado"; exit 1; }
+      # ============================================================
+      # GAMING TUNING 1/2: umbrales de gpu_dvfs_table (device tree).
+      # Las 3 filas superiores (1300/1200/1100 MHz) tenían max_threshold=100
+      # (prácticamente inalcanzable en gaming real) mientras el resto de la
+      # tabla usa 95 - se alinean. gpu_max_clock (1100000, confirmado real,
+      # NO 1300000) y gpu_temp_throttling quedan intactos - cero overclock,
+      # solo se corrige un umbral inconsistente en filas ya existentes.
+      # NOTA (sin resolver, revisar antes de tocar de nuevo): la fila
+      # 1200000 también cambia su PRIMER valor (98->90), no solo el
+      # max_threshold - el comentario original no explica ese segundo
+      # cambio. Confirmar qué representa esa columna antes de replicar
+      # este patrón en otro lado.
+      # ============================================================
+
+      - name: Tune GPU DVFS thresholds for gaming (top 3 steps)
+        working-directory: kernel
+        run: |
+          CANDIDATES=$(grep -rl "gpu_dvfs_table_size" arch/arm64/boot/dts 2>/dev/null | grep "7885")
+          COUNT=$(echo "$CANDIDATES" | grep -c . || true)
+          if [ -z "$CANDIDATES" ] || [ "$COUNT" != "1" ]; then
+            echo "ERROR: no se encontró exactamente 1 archivo con gpu_dvfs_table_size y '7885' en la ruta."
+            echo "Candidatos con 7885 en la ruta ($COUNT encontrados):"
+            echo "$CANDIDATES"
+            exit 1
+          fi
+          F="$CANDIDATES"
+          echo "Archivo encontrado (filtrado a exynos7885): $F"
+          cp "$F" "$F.orig"
+          perl -0777 -pi -e 's/1300000 98  100  1/1300000 98   95  1/' "$F"
+          perl -0777 -pi -e 's/1200000 98  100  1/1200000 90   95  1/' "$F"
+          perl -0777 -pi -e 's/1100000 90  100  1/1100000 90   95  1/' "$F"
+          [ "$(grep -c '1300000 98   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1300000 no matcheó"; diff "$F.orig" "$F"; exit 1; }
+          [ "$(grep -c '1200000 90   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1200000 no matcheó"; diff "$F.orig" "$F"; exit 1; }
+          [ "$(grep -c '1100000 90   95  1' "$F")" = "1" ] || { echo "ERROR: fila 1100000 no matcheó"; diff "$F.orig" "$F"; exit 1; }
+          grep -q "gpu_max_clock = <1100000>;" "$F" || {
+            echo "ERROR: gpu_max_clock no coincide con el valor confirmado (1100000)."
+            grep -n "gpu_max_clock" "$F"; diff "$F.orig" "$F"; exit 1
+          }
+          echo "--- Diff completo aplicado ---"
+          diff "$F.orig" "$F" || true
+          rm "$F.orig"
+      # ============================================================
+      # GAMING TUNING 2/2: techo de boost táctil (input_booster nativo de
+      # Samsung, YA ACTIVO en drivers/input/input.c a nivel genérico de
+      # input_event() - NO requiere CONFIG_INPUT_BOOSTER, que de hecho
+      # apagaría esta rama nativa si se activara). Se sube el techo de
+      # TOUCH/MULTITOUCH de 1144000/936000 al máximo real confirmado de la
+      # BIG (2184000, el mismo valor certificado que se usó para descartar
+      # el overclock). KEY/TOUCHKEY/KEYBOARD quedan intactos.
+      # PROBADO 1 DÍA COMPLETO en uso normal sin quejas de batería/calor -
+      # aceptado tal cual. Si hace falta bajar la agresividad en el futuro,
+      # el punto medio sugerido es 1600000-1800000 en vez de 2184000.
+      # ============================================================
+
+      - name: Tune native touch input-booster ceiling for gaming
+        working-directory: kernel
+        run: |
+          F=$(grep -rl 'input_booster,label = "TOUCH"' arch/arm64/boot/dts 2>/dev/null | head -1)
+          if [ -z "$F" ]; then
+            echo "ERROR: no se encontró el archivo con el nodo input_booster TOUCH"
+            exit 1
+          fi
+          echo "Archivo encontrado: $F"
+          cp "$F" "$F.orig"
+          perl -0777 -pi -e 's/(input_booster,label = "TOUCH";.*?input_booster,cpu_freqs = <)1144000 1144000 936000(>;)/${1}2184000 2184000 2184000${2}/s' "$F"
+          perl -0777 -pi -e 's/(input_booster,label = "MULTITOUCH";.*?input_booster,cpu_freqs = <)1144000 936000(>;)/${1}2184000 2184000${2}/s' "$F"
+          grep -A12 'label = "TOUCH"' "$F" | grep -q "cpu_freqs = <2184000 2184000 2184000>;" || { echo "ERROR: TOUCH no se actualizó"; diff "$F.orig" "$F"; exit 1; }
+          grep -A12 'label = "MULTITOUCH"' "$F" | grep -q "cpu_freqs = <2184000 2184000>;" || { echo "ERROR: MULTITOUCH no se actualizó"; diff "$F.orig" "$F"; exit 1; }
+          grep -A12 'label = "KEY"' "$F" | grep -q "cpu_freqs = <1144000>;" || { echo "ERROR: KEY se tocó sin querer"; exit 1; }
+          grep -A12 'label = "TOUCHKEY"' "$F" | grep -q "cpu_freqs = <1144000>;" || { echo "ERROR: TOUCHKEY se tocó sin querer"; exit 1; }
+          echo "--- Diff completo aplicado ---"
+          diff "$F.orig" "$F" || true
+          rm "$F.orig"
+      # ============================================================
+      # 9. BFQ (copiar y hacerlo el scheduler por defecto parcheando Kconfig)
+      # ============================================================
+
+      - name: Port BFQ scheduler and set as default
+        working-directory: kernel
+        run: |
+          # Copiar archivos BFQ del donante
+          cp -v ../donor/block/bfq-*.c block/ || { echo "ERROR: No se copiaron .c de BFQ"; exit 1; }
+          cp -v ../donor/block/bfq*.h block/ 2>/dev/null || echo "No se encontraron .h en block/"
+          cp -v ../donor/include/linux/bfq*.h include/linux/ 2>/dev/null || echo "No se encontraron .h en include/linux/"
+          ls -la block/bfq-iosched.c block/bfq.h || { echo "ERROR: faltan archivos BFQ"; exit 1; }
+          # Modificar Kconfig.iosched para añadir BFQ
+          if ! grep -q "config IOSCHED_BFQ" block/Kconfig.iosched; then
+            cat >> block/Kconfig.iosched << 'EOF'
+          config IOSCHED_BFQ
+            tristate "BFQ I/O scheduler"
+            default y
+            ---help---
+              BFQ (Budget Fair Queueing) is a proportional-share I/O scheduler.
+              It provides low latency and fairness.
+          EOF
+          fi
+          # Parchear Kconfig para añadir DEFAULT_BFQ en la choice "Default I/O scheduler"
+          # (porque no existe nativamente)
+          FILE=block/Kconfig.iosched
+          if ! grep -q "config DEFAULT_BFQ" "$FILE"; then
+            sed -i '/^endchoice/i\config DEFAULT_BFQ\n\tbool "BFQ" if IOSCHED_BFQ=y\n' "$FILE"
+          fi
+          if ! grep -q 'default "bfq" if DEFAULT_BFQ' "$FILE"; then
+            sed -i '/default "noop" if DEFAULT_NOOP/a\	default "bfq" if DEFAULT_BFQ' "$FILE"
+          fi
+          grep -q "config DEFAULT_BFQ" "$FILE" || { echo "ERROR: no se añadió DEFAULT_BFQ al Kconfig"; exit 1; }
+          grep -q 'default "bfq" if DEFAULT_BFQ' "$FILE" || { echo "ERROR: no se mapeó DEFAULT_IOSCHED a bfq"; exit 1; }
+          # Makefile: solo bfq-iosched.o (bfq-cgroup.c se incluye textualmente)
+          if ! grep -q "bfq" block/Makefile; then
+            echo "obj-\$(CONFIG_IOSCHED_BFQ) += bfq-iosched.o" >> block/Makefile
+          fi
+          # Activar en defconfig y seleccionar como default
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          if grep -q "^# CONFIG_IOSCHED_BFQ is not set" "$DEFCONFIG"; then
+            sed -i 's/# CONFIG_IOSCHED_BFQ is not set/CONFIG_IOSCHED_BFQ=y/' "$DEFCONFIG"
+          else
+            echo "CONFIG_IOSCHED_BFQ=y" >> "$DEFCONFIG"
+          fi
+          grep -q "CONFIG_IOSCHED_BFQ=y" "$DEFCONFIG" || { echo "ERROR: BFQ no activado"; exit 1; }
+          # Eliminar default previo y establecer BFQ
+          sed -i '/^CONFIG_DEFAULT_DEADLINE/d;/^CONFIG_DEFAULT_CFQ/d;/^CONFIG_DEFAULT_NOOP/d;/^CONFIG_DEFAULT_IOSCHED/d' "$DEFCONFIG"
+          echo "CONFIG_DEFAULT_BFQ=y" >> "$DEFCONFIG"
+          grep -n "CONFIG_DEFAULT_BFQ\|CONFIG_DEFAULT_IOSCHED" "$DEFCONFIG" || true
+      # ============================================================
+      # 10. WIREGUARD
+      # ============================================================
+
+      - name: Port WireGuard from donor kernel
+        working-directory: kernel
+        run: |
+          mkdir -p net/wireguard
+          cp -rv ../donor/net/wireguard/* net/wireguard/ || { echo "ERROR: No se pudo copiar WireGuard"; exit 1; }
+          ls -la net/wireguard/*.c net/wireguard/*.h 2>/dev/null || { echo "ERROR: No se copió WireGuard"; exit 1; }
+          if ! grep -q "net/wireguard/Kconfig" net/Kconfig; then
+            sed -i '/^endmenu/i source "net/wireguard/Kconfig"' net/Kconfig
+          fi
+          if ! grep -q "wireguard" net/Makefile; then
+            echo "obj-\$(CONFIG_WIREGUARD) += wireguard/" >> net/Makefile
+          fi
+          if grep -q "^# CONFIG_WIREGUARD is not set" arch/arm64/configs/lineage_a7y18lte_defconfig; then
+            sed -i 's/# CONFIG_WIREGUARD is not set/CONFIG_WIREGUARD=y/' \
+              arch/arm64/configs/lineage_a7y18lte_defconfig
+          else
+            echo "CONFIG_WIREGUARD=y" >> arch/arm64/configs/lineage_a7y18lte_defconfig
+          fi
+          grep -q "CONFIG_WIREGUARD=y" arch/arm64/configs/lineage_a7y18lte_defconfig || { echo "ERROR: WireGuard no activado"; exit 1; }
+      # ============================================================
+      # WATCHDOG DE SALUD DEL TOUCH IC (Imagis IST40XX)
+      # ============================================================
+      # Diagnóstico: el único mecanismo de recovery del driver original
+      # (ist40xx_request_reset) solo cuenta errores DENTRO del handler de
+      # interrupciones - si el IC deja de generar interrupciones por
+      # completo (silencio total, no errores), ese contador nunca sube y
+      # nunca se dispara un reset. Esto agrega un chequeo activo cada ~5s
+      # que fuerza un reset si el IC deja de responder por I2C.
+      # PROBADO 1 DÍA en equipo real junto con el resto de este build.
+      # Colocado ANTES de "Compile kernel" (si se coloca después de
+      # "Verify kernel output" el parche nunca llega a compilarse en el
+      # Image ya generado - bug real ya cometido una vez).
+      # ============================================================
+
+      - name: Add touch IC health-check watchdog (Imagis IST40XX)
+        working-directory: kernel
+        run: |
+          F=drivers/input/touchscreen/imagis_40xx/ist40xx.c
+          H=drivers/input/touchscreen/imagis_40xx/ist40xx.h
+          if [ ! -f "$F" ] || [ ! -f "$H" ]; then
+            echo "ERROR: no se encontró ist40xx.c/.h en la ruta esperada - confirmar ruta real antes de continuar"
+            find kernel/drivers/input/touchscreen -iname "ist40xx*" 2>/dev/null
+            exit 1
+          fi
+          perl -0777 -pi -e 's/(\tstruct delayed_work work_reset_check;\n)/$1\tstruct delayed_work work_health_check;\t\/* watchdog: IC silencioso *\/\n/' "$H"
+          perl -0777 -pi -e 's/(\}\n\n#ifdef IST40XX_NOISE_MODE\nstatic void noise_work_func)/}\n\nstatic void health_check_work_func(struct work_struct *work)\n{\n\tstruct delayed_work *delayed_work = to_delayed_work(work);\n\tstruct ist40xx_data *data =\n\t    container_of(delayed_work, struct ist40xx_data,\n\t\t\t work_health_check);\n\tu32 hc_val;\n\tint hc_ret;\n\n\tif (unlikely((data == NULL) || (data->client == NULL)))\n\t\treturn;\n\n\tif (unlikely(!data->initialized ||\n\t\t     data->status.sys_mode == STATE_POWER_OFF ||\n\t\t     data->status.update == 1 ||\n\t\t     data->status.calib >= 1 || data->status.miscalib >= 1))\n\t\treturn;\n\n\t\/* Lectura liviana de un registro de estado, solo para confirmar que\n\t * el IC sigue respondiendo por I2C. *\/\n\tmutex_lock(&data->lock);\n\thc_ret = ist40xx_read_reg(data->client, IST40XX_HIB_TOUCH_STATUS, &hc_val);\n\tmutex_unlock(&data->lock);\n\n\tif (unlikely(hc_ret)) {\n\t\tinput_info(true, &data->client->dev,\n\t\t\t   "%s: IC no responde al health-check, forzando reset\\n",\n\t\t\t   __func__);\n\t\tist40xx_scheduled_reset(data);\n\t}\n}\n\n#ifdef IST40XX_NOISE_MODE\nstatic void noise_work_func/' "$F"
+          perl -0pi -e 's/(\tINIT_DELAYED_WORK\(&data->work_reset_check, reset_work_func\);\n)/$1\tINIT_DELAYED_WORK(&data->work_health_check, health_check_work_func);\n/' "$F"
+          perl -0pi -e 's/(\tcancel_delayed_work_sync\(&data->work_reset_check\);\n)/$1\tcancel_delayed_work_sync(&data->work_health_check);\n/g' "$F"
+          perl -0777 -pi -e 's/(if \(data->irq_working \|\| !data->initialized \|\| data->rec_mode\)\n\t\tgoto restart_timer;\n\n)(\tif \(status->event_mode\) \{\n\t\tif \(likely)/$1\tif (likely(status->event_mode) \&\& status->sys_mode != STATE_POWER_OFF) {\n\t\tstatic int hc_tick;\n\t\tif (++hc_tick >= 10) {\t\/* cada ~5s (timer corre cada 500ms) *\/\n\t\t\thc_tick = 0;\n\t\t\tschedule_delayed_work(&data->work_health_check, 0);\n\t\t}\n\t}\n\n$2/' "$F"
+          echo "--- Verificación: cada inserción debe dar exactamente el conteo esperado ---"
+          [ "$(grep -c 'work_health_check' "$H")" = "1" ] || { echo "ERROR: campo del struct no se insertó (o se duplicó)"; exit 1; }
+          [ "$(grep -c 'work_health_check' "$F")" = "5" ] || { echo "ERROR: conteo inesperado en ist40xx.c"; exit 1; }
+          [ "$(grep -c 'health_check_work_func' "$F")" = "2" ] || { echo "ERROR: función no se insertó (o se duplicó)"; exit 1; }
+          echo "OK: las 5 inserciones aplicaron exactamente una vez cada una"
+      # ============================================================
+      # RENDIMIENTO SIN OC 1/N: LMK - expandir de 4 a los 6 niveles reales
+      # que el array ya soporta (declarado [6], pero lowmem_adj_size/
+      # lowmem_minfree_size quedaban en 4 - los últimos 2 slots existían
+      # en el binario pero nunca se usaban). Confirmado con valores reales
+      # del log del CI (run #21, 2026-09-14): adj={0,1,6,12},
+      # minfree={6,8,16,64}MB. Se mantienen los 4 adj originales tal cual
+      # (no se inventan), se les da más margen, y se insertan 2 niveles
+      # nuevos en la posición correcta (9 entre 6 y 12, 15 como techo real
+      # tipo EMPTY_APP) para que el sistema deje de matar background con
+      # apenas 64MB libres en un equipo de 4GB. Aritmética verificada:
+      # unidades del driver = páginas de 4KB (3*1024=3072 pág=12MB, etc).
+      #
+      # CORRECCIÓN 2026-10-16: los valores de abajo (12/18/28/40/64/90MB)
+      # resultaron DEMASIADO altos - minfree alto = LMK mata ANTES (con
+      # mas RAM libre todavia), no despues. Causaba que las apps en
+      # background se cerraran casi al instante (adj=15 a 90MB se gatilla
+      # casi siempre en un equipo de 4GB). Se bajan todos los umbrales,
+      # sobre todo los tiers altos (12/15, que son los que deciden si una
+      # app recien minimizada sigue viva), para multitarea mucho mas
+      # permisiva mientras el kernel sigue teniendo zram (4.19x medido) y
+      # min_free_kbytes=12288 como colchon aparte contra un OOM real.
+      # ============================================================
+
+      - name: Tune LMK to real 6-tier minfree/adj (4GB RAM profile)
+        working-directory: kernel
+        run: |
+          F=drivers/staging/android/lowmemorykiller.c
+          if [ ! -f "$F" ]; then
+            echo "ERROR: no se encontró $F en la ruta esperada"
+            find . -iname "lowmemorykiller.c" 2>/dev/null
+            exit 1
+          fi
+          cp "$F" "$F.orig"
+          python3 - "$F" << 'PYEOF'
+          import sys
+          path = sys.argv[1]
+          with open(path) as f:
+              content = f.read()
+          old = (
+              "static short lowmem_adj[6] = {\n"
+              "\t0,\n"
+              "\t1,\n"
+              "\t6,\n"
+              "\t12,\n"
+              "};\n"
+              "static int lowmem_adj_size = 4;\n"
+              "static int lowmem_minfree[6] = {\n"
+              "\t3 * 512,\t/* 6MB */\n"
+              "\t2 * 1024,\t/* 8MB */\n"
+              "\t4 * 1024,\t/* 16MB */\n"
+              "\t16 * 1024,\t/* 64MB */\n"
+              "};\n"
+              "static int lowmem_minfree_size = 4;\n"
+          )
+          new = (
+              "static short lowmem_adj[6] = {\n"
+              "\t0,\n"
+              "\t1,\n"
+              "\t6,\n"
+              "\t9,\n"
+              "\t12,\n"
+              "\t15,\n"
+              "};\n"
+              "static int lowmem_adj_size = 6;\n"
+              "static int lowmem_minfree[6] = {\n"
+              "\t3 * 1024,\t/* 12MB */\n"
+              "\t4 * 1024,\t/* 16MB */\n"
+              "\t6 * 1024,\t/* 24MB */\n"
+              "\t8 * 1024,\t/* 32MB */\n"
+              "\t10240,\t\t/* 40MB */\n"
+              "\t12 * 1024,\t/* 48MB */\n"
+              "};\n"
+              "static int lowmem_minfree_size = 6;\n"
+          )
+          if old not in content:
+              print("ERROR: el bloque original de lowmem_adj/lowmem_minfree no coincidió exacto (¿cambió el whitespace o el árbol?)")
+              sys.exit(1)
+          if content.count(old) != 1:
+              print(f"ERROR: el bloque original apareció {content.count(old)} veces, se esperaba 1")
+              sys.exit(1)
+          content = content.replace(old, new)
+          with open(path, "w") as f:
+              f.write(content)
+          print("OK: bloque LMK reemplazado exactamente 1 vez")
+          PYEOF
+          grep -q "static int lowmem_adj_size = 6;" "$F" || { echo "ERROR: lowmem_adj_size no quedó en 6"; diff "$F.orig" "$F"; exit 1; }
+          grep -q "static int lowmem_minfree_size = 6;" "$F" || { echo "ERROR: lowmem_minfree_size no quedó en 6"; diff "$F.orig" "$F"; exit 1; }
+          grep -q "12 \* 1024" "$F" && grep -q "48MB" "$F" || { echo "ERROR: el nivel adj=15 (48MB) no quedó como se esperaba"; diff "$F.orig" "$F"; exit 1; }
+          echo "--- Diff completo aplicado ---"
+          diff "$F.orig" "$F" || true
+          rm "$F.orig"
+      # ============================================================
+      # 11. COMPILACIÓN (con verificaciones de .config)
+      # ============================================================
+
+      # ============================================================
+      # PRUEBA PARCHE 01: gobernadores extra (blu_active, bioshock,
+      # darkness). Los archivos .c se toman de la rama de respaldo del
+      # fork. schedutil sigue siendo el gobernador por defecto.
+      # ============================================================
+
+      - name: Checkout fork backup (solo drivers/cpufreq)
+        uses: actions/checkout@v4
+        with:
+          repository: sacksso/sack_kernel_samsung_exynos7885_testing
+          # SHA fijo de backup-pre-reset (antes: el nombre de la rama).
+          ref: 094db06fb7e48e2035263cca7f9fc46a7e0b2490
+          path: forksrc
+          fetch-depth: 1
+          sparse-checkout: drivers/cpufreq
+
+      - name: Port extra cpufreq governors (blu_active, bioshock, darkness)
+        working-directory: kernel
+        run: |
+          set -e
+          for g in blu_active bioshock darkness; do
+            test -f ../forksrc/drivers/cpufreq/cpufreq_$g.c || { echo "ERROR: falta cpufreq_$g.c en el respaldo"; exit 1; }
+            cp -v ../forksrc/drivers/cpufreq/cpufreq_$g.c drivers/cpufreq/
+          done
+          python3 - << 'PYEOF'
+          kc = "drivers/cpufreq/Kconfig"
+          mk = "drivers/cpufreq/Makefile"
+          entries = (
+              "config CPU_FREQ_GOV_BLU_ACTIVE\n"
+              "\ttristate \"'blu_active' cpufreq policy governor\"\n"
+              "\tdepends on CPU_FREQ\n"
+              "\thelp\n"
+              "\t  'blu_active' is a dynamic governor for latency-sensitive workloads.\n"
+              "\n"
+              "config CPU_FREQ_GOV_BIOSHOCK\n"
+              "\ttristate \"'bioshock' cpufreq governor\"\n"
+              "\tdepends on CPU_FREQ\n"
+              "\thelp\n"
+              "\t  'bioshock' is an aggressive variant of the conservative governor.\n"
+              "\n"
+              "config CPU_FREQ_GOV_DARKNESS\n"
+              "\ttristate \"'darkness' cpufreq policy governor\"\n"
+              "\tdepends on CPU_FREQ\n"
+              "\n"
+          )
+          k = open(kc).read()
+          if "CPU_FREQ_GOV_BLU_ACTIVE" in k:
+              raise SystemExit("ERROR: Kconfig ya contiene los gobernadores")
+          anchor = "\nif X86\n"
+          if k.count(anchor) != 1:
+              raise SystemExit("ERROR: ancla 'if X86' no encontrada exactamente una vez")
+          k = k.replace(anchor, "\n" + entries + "if X86\n", 1)
+          open(kc, "w").write(k)
+          m = open(mk).read()
+          if not m.endswith("\n"):
+              m += "\n"
+          m += "obj-$(CONFIG_CPU_FREQ_GOV_BLU_ACTIVE)\t+= cpufreq_blu_active.o\n"
+          m += "obj-$(CONFIG_CPU_FREQ_GOV_DARKNESS)\t+= cpufreq_darkness.o\n"
+          m += "obj-$(CONFIG_CPU_FREQ_GOV_BIOSHOCK)\t+= cpufreq_bioshock.o\n"
+          open(mk, "w").write(m)
+          print("OK: Kconfig y Makefile actualizados")
+          PYEOF
+          DEFCONFIG=arch/arm64/configs/lineage_a7y18lte_defconfig
+          for s in BLU_ACTIVE BIOSHOCK DARKNESS; do
+            grep -q "^CONFIG_CPU_FREQ_GOV_$s=y" "$DEFCONFIG" || echo "CONFIG_CPU_FREQ_GOV_$s=y" >> "$DEFCONFIG"
+          done
+          grep -n "CPU_FREQ_GOV_BLU_ACTIVE\|CPU_FREQ_GOV_BIOSHOCK\|CPU_FREQ_GOV_DARKNESS" "$DEFCONFIG" drivers/cpufreq/Makefile drivers/cpufreq/Kconfig
+
+      # ============================================================
+      # KERNELSU v0.9.5 - integracion manual (sin kprobes). Ultima version oficial con
+      # soporte non-GKI; fijada al commit exacto del tag para que no cambie sola.
+      # Los hooks de abajo vienen del intento anterior del 2026-09-07 y se
+      # revalidaron aplicandolos sobre el upstream fijado (6020dfa) y compilando con
+      # GCC 6.4.1. Las funciones de KernelSU se llaman directo; internamente ya se
+      # protegen con sus banderas (ksu_*_hook, true por defecto sin kprobes).
+      # IMPORTANTE: KernelSU y Magisk NO pueden convivir (ksud se salta todo si
+      # encuentra 'magisk'), asi que para probar hay que quitar Magisk antes.
+      # ============================================================
+
+      - name: Add KernelSU v0.9.5 source tree (pinned)
+        working-directory: kernel
+        run: |
+          set -e
+          git clone https://github.com/tiann/KernelSU KernelSU
+          git -C KernelSU checkout b766b98513b5a7eb33bc1c4a76b5702bf1288f07
+          echo "KernelSU tag exacto: $(git -C KernelSU describe --tags --exact-match)"
+          echo "Commits (KSU_VERSION = 10200 + commits): $(git -C KernelSU rev-list --count HEAD)"
+          test "$(git -C KernelSU describe --tags --exact-match)" = "v0.9.5" || { echo "ERROR: el commit fijado ya no es v0.9.5"; exit 1; }
+          ln -sf ../KernelSU/kernel drivers/kernelsu
+          grep -q kernelsu drivers/Makefile || printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          grep -q 'drivers/kernelsu/Kconfig' drivers/Kconfig || sed -i '/endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          test -f drivers/kernelsu/Kconfig || { echo "ERROR: enlace drivers/kernelsu roto"; exit 1; }
+          grep -n kernelsu drivers/Makefile drivers/Kconfig
+
+      - name: Enable CONFIG_OVERLAY_FS and CONFIG_KSU in defconfig
+        working-directory: kernel
+        run: |
+          set -e
+          D=arch/arm64/configs/lineage_a7y18lte_defconfig
+          # CONFIG_KSU depende de OVERLAY_FS; sin el, Kconfig descarta KSU en silencio
+          sed -i 's/# CONFIG_OVERLAY_FS is not set/CONFIG_OVERLAY_FS=y/' "$D"
+          grep -q "^CONFIG_OVERLAY_FS=y" "$D" || echo "CONFIG_OVERLAY_FS=y" >> "$D"
+          grep -q "^CONFIG_KSU=y" "$D" || printf '\n# KernelSU\nCONFIG_KSU=y\n' >> "$D"
+          grep -n "CONFIG_OVERLAY_FS\|CONFIG_KSU\|CONFIG_BLK_DEV_LOOP=\|CONFIG_EXT4_FS=" "$D"
+          if grep -q "^CONFIG_KPROBES=y" "$D"; then echo "ERROR: CONFIG_KPROBES activo, incompatible con la integracion manual"; exit 1; fi
+
+      - name: Patch fs/exec.c (do_execveat_common) - hook completo con arranque de ksud
+        working-directory: kernel
+        run: |
+          perl -0777 -pi -e 's/static int do_execveat_common\(int fd, struct filename \*filename,/#ifdef CONFIG_KSU\nextern int ksu_handle_execveat_ksud(int *fd, struct filename **filename_ptr,\n\t\t\tvoid *argv, void *envp, int *flags);\nextern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,\n\t\t\t\t void *argv, void *envp, int *flags);\n#endif\nstatic int do_execveat_common(int fd, struct filename *filename,/' fs/exec.c
+          perl -0777 -pi -e 's/\tint retval;\n\n\tif \(IS_ERR\(filename\)\)\n\t\treturn PTR_ERR\(filename\);/\tint retval;\n\n#ifdef CONFIG_KSU\n\tksu_handle_execveat_ksud(&fd, &filename, &argv, &envp, &flags);\n\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);\n#endif\n\n\tif (IS_ERR(filename))\n\t\treturn PTR_ERR(filename);/' fs/exec.c
+          echo "--- Verificacion (Regla 8): cada simbolo debe aparecer 2 veces (extern + llamada) ---"
+          KSUD_COUNT=$(grep -c "ksu_handle_execveat_ksud" fs/exec.c)
+          SUCOMPAT_COUNT=$(grep -c "ksu_handle_execveat_sucompat" fs/exec.c)
+          echo "ksu_handle_execveat_ksud: $KSUD_COUNT | ksu_handle_execveat_sucompat: $SUCOMPAT_COUNT"
+          if [ "$KSUD_COUNT" -ne 2 ] || [ "$SUCOMPAT_COUNT" -ne 2 ]; then
+            echo "ERROR: el patron de fs/exec.c no matcheo como se esperaba (fallo silencioso, Regla 8)"
+            exit 1
+          fi
+          if grep -q "ksu_execveat_hook" fs/exec.c; then
+            echo "ERROR: quedo codigo viejo de ksu_execveat_hook (rama que nunca corre sin kprobe)"
+            exit 1
+          fi
+
+      - name: Patch fs/open.c (faccessat, variante pre-4.17)
+        working-directory: kernel
+        run: |
+          perl -0777 -pi -e 's{(/\*\n \* access\(\) needs to use the real uid/gid)}{#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode,\n\t\t\t        int *flags);\n#endif\n\n$1}' fs/open.c
+          perl -0777 -pi -e 's/(unsigned int lookup_flags = LOOKUP_FOLLOW;\n)(\n\tif \(mode & ~S_IRWXO\))/$1\n#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n$2/' fs/open.c
+          grep -c "ksu_handle_faccessat" fs/open.c
+
+      - name: Patch fs/read_write.c (vfs_read) - hook real de arranque via init.rc
+        working-directory: kernel
+        run: |
+          perl -0777 -pi -e 's/(ssize_t vfs_read\(struct file \*file, char __user \*buf, size_t count, loff_t \*pos\))/#ifdef CONFIG_KSU\nextern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr,\n\t\t\tsize_t *count_ptr, loff_t **pos);\n#endif\n$1/' fs/read_write.c
+          perl -0777 -pi -e 's/(ssize_t ret;\n)(\n\tif \(!\(file->f_mode & FMODE_READ\)\))/$1\n#ifdef CONFIG_KSU\n\tksu_handle_vfs_read(&file, &buf, &count, &pos);\n#endif\n$2/' fs/read_write.c
+          echo "--- Verificacion (Regla 8): el simbolo debe aparecer 2 veces (extern + llamada), sin bandera vieja ---"
+          VFS_READ_COUNT=$(grep -c "ksu_handle_vfs_read" fs/read_write.c)
+          echo "ksu_handle_vfs_read: $VFS_READ_COUNT"
+          if [ "$VFS_READ_COUNT" -ne 2 ]; then
+            echo "ERROR: el patron de fs/read_write.c no matcheo como se esperaba (fallo silencioso, Regla 8)"
+            exit 1
+          fi
+          if grep -q "ksu_vfs_read_hook" fs/read_write.c; then
+            echo "ERROR: quedo codigo viejo de ksu_vfs_read_hook (bandera que nunca se activa sin kprobe)"
+            exit 1
+          fi
+
+      - name: Patch fs/stat.c (vfs_fstatat - no existe vfs_statx en este kernel)
+        working-directory: kernel
+        run: |
+          perl -0777 -pi -e 's/(int vfs_fstatat\(int dfd, const char __user \*filename, struct kstat \*stat,)/#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n$1/' fs/stat.c
+          perl -0777 -pi -e 's/(unsigned int lookup_flags = 0;\n)(\n\tif \(\(flag & ~\(AT_SYMLINK_NOFOLLOW)/$1\n#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flag);\n#endif\n$2/' fs/stat.c
+          grep -c "ksu_handle_stat" fs/stat.c
+
+      - name: Patch drivers/input/input.c (SafeMode)
+        working-directory: kernel
+        run: |
+          perl -0777 -pi -e 's/(static void input_handle_event\(struct input_dev \*dev,\n\t\t\t       unsigned int type, unsigned int code, int value\))/#ifdef CONFIG_KSU\nextern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);\n#endif\n\n$1/' drivers/input/input.c
+          perl -0777 -pi -e 's/(disposition = input_get_disposition\(dev, type, code, &value\);\n)(\n\tif \(\(disposition & INPUT_PASS_TO_DEVICE\))/$1\n#ifdef CONFIG_KSU\n\tksu_handle_input_handle_event(&type, &code, &value);\n#endif\n$2/' drivers/input/input.c
+          echo "--- Verificacion (Regla 8) ---"
+          INPUT_COUNT=$(grep -c "ksu_handle_input_handle_event" drivers/input/input.c)
+          echo "ksu_handle_input_handle_event: $INPUT_COUNT"
+          if [ "$INPUT_COUNT" -ne 2 ]; then
+            echo "ERROR: el patron de input.c no matcheo como se esperaba (fallo silencioso, Regla 8)"
+            exit 1
+          fi
+          if grep -q "ksu_input_hook" drivers/input/input.c; then
+            echo "ERROR: quedo codigo viejo de ksu_input_hook (bandera que nunca se activa sin kprobe)"
+            exit 1
+          fi
+
+      - name: Backport path_umount to fs/namespace.c
+        working-directory: kernel
+        run: |
+          perl -0777 -pi -e 's/(static inline bool may_mount\(void\)\n\{\n\treturn ns_capable\(current->nsproxy->mnt_ns->user_ns, CAP_SYS_ADMIN\);\n\}\n)/$1\n#ifdef CONFIG_KSU\n#ifdef CONFIG_RKP_NS_PROT\nstatic int can_umount(const struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\n\tif (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))\n\t\treturn -EINVAL;\n\tif (!may_mount())\n\t\treturn -EPERM;\n\tif (path->dentry != path->mnt->mnt_root)\n\t\treturn -EINVAL;\n\tif (!check_mnt(mnt))\n\t\treturn -EINVAL;\n\tif (mnt->mnt->mnt_flags & MNT_LOCKED)\n\t\treturn -EINVAL;\n\tif (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))\n\t\treturn -EPERM;\n\treturn 0;\n}\n#else\nstatic int can_umount(const struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\n\tif (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))\n\t\treturn -EINVAL;\n\tif (!may_mount())\n\t\treturn -EPERM;\n\tif (path->dentry != path->mnt->mnt_root)\n\t\treturn -EINVAL;\n\tif (!check_mnt(mnt))\n\t\treturn -EINVAL;\n\tif (mnt->mnt.mnt_flags & MNT_LOCKED)\n\t\treturn -EINVAL;\n\tif (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))\n\t\treturn -EPERM;\n\treturn 0;\n}\n#endif\n\nint path_umount(struct path *path, int flags)\n{\n\tstruct mount *mnt = real_mount(path->mnt);\n\tint ret;\n\n\tret = can_umount(path, flags);\n\tif (!ret)\n\t\tret = do_umount(mnt, flags);\n\n\t\/* we mustn.t call path_put() as that would clear mnt_expiry_mark *\/\n\tdput(path->dentry);\n\tmntput_no_expire(mnt);\n\treturn ret;\n}\n#endif\n/' fs/namespace.c
+          grep -c "^int path_umount" fs/namespace.c
+
+      - name: Compile kernel
+        working-directory: kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-"
+          export CROSS_COMPILE_ARM32="arm-linux-gnueabi-"
+          make O=out lineage_a7y18lte_defconfig
+          # Verificaciones
+          grep -q "CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y" out/.config || { echo "ERROR: schedutil no activo en .config"; exit 1; }
+          grep -q "CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y" out/.config || { echo "ERROR: schedutil no es el gobernador por defecto en .config"; exit 1; }
+          grep -q "CONFIG_FREQVAR_SCHEDTUNE=y" out/.config || { echo "ERROR: FREQVAR_SCHEDTUNE no activo en .config"; exit 1; }
+          grep -q "CONFIG_CRYPTO_ZSTD=y" out/.config || { echo "ERROR: ZSTD no activo en .config"; exit 1; }
+          grep -q "CONFIG_ZRAM_LZ4_COMPRESS=y" out/.config || { echo "ERROR: ZRAM_LZ4_COMPRESS no activo en .config"; exit 1; }
+          grep -q "CONFIG_IOSCHED_BFQ=y" out/.config || { echo "ERROR: BFQ no activo en .config"; exit 1; }
+          grep -q "CONFIG_WIREGUARD=y" out/.config || { echo "ERROR: WireGuard no activo en .config"; exit 1; }
+          if ! grep -q 'CONFIG_DEFAULT_TCP_CONG="cubic"' out/.config && ! grep -q "CONFIG_DEFAULT_TCP_CONG='cubic'" out/.config && ! grep -q "CONFIG_DEFAULT_TCP_CONG=cubic" out/.config; then
+            echo "ERROR: TCP cubic no configurado en .config"
+            exit 1
+          fi
+          grep -q "CONFIG_NET_SCH_FQ=y" out/.config || { echo "ERROR: fq qdisc no activo en .config"; exit 1; }
+          grep -q "CONFIG_KSM=y" out/.config || { echo "ERROR: KSM no activo en .config"; exit 1; }
+          grep -q "CONFIG_THERMAL_WRITABLE_TRIPS=y" out/.config || { echo "ERROR: THERMAL_WRITABLE_TRIPS no activo en .config"; exit 1; }
+          grep -q "CONFIG_TRANSPARENT_HUGEPAGE=y" out/.config || { echo "ERROR: THP no activo en .config"; exit 1; }
+          # UKSM desactivado temporalmente (ver step "Apply UKSM patch") - sin verificacion aqui
+          grep -q "CONFIG_NETFILTER_XT_TARGET_HL=y" out/.config || { echo "ERROR: TTL/HL (NETFILTER_XT_TARGET_HL) no activo en .config"; exit 1; }
+          # BBR es opcional (depende de si el donante lo trae backporteado a 4.4) - no bloquea el build
+          if grep -q "CONFIG_TCP_CONG_BBR=y" out/.config; then
+            echo "BBR activo en .config (portado del donante)"
+          else
+            echo "AVISO: BBR no disponible en .config (BBR_STATUS=${BBR_STATUS:-unavailable}) - build continúa con cubic+fq"
+          fi
+          echo "Todas las opciones están correctamente habilitadas en .config"
+          # ------------------------------------------------------------
+          # GUARD DE SCHEDULERS: todo CONFIG_IOSCHED_* activo (=y/=m) cuyo
+          # objeto aparezca en block/Makefile debe tener su .c en block/.
+          # Evita el error "No rule to make target 'block/xxx-iosched.o'".
+          # ------------------------------------------------------------
+          python3 - << 'PYEOF'
+          import os, re, sys
+          cfg = open("out/.config").read()
+          enabled = set(re.findall(r'^(CONFIG_[A-Z0-9_]+)=[ym]$', cfg, re.M))
+          mk = open("block/Makefile").read().replace("\\\n", " ")
+          mk = "\n".join(l.split("#", 1)[0] for l in mk.splitlines())
+          missing, checked, in_makefile = [], 0, set()
+          for m in re.finditer(r'^obj-\$\((CONFIG_[A-Z0-9_]+)\)\s*[+:]?=\s*(.+)$', mk, re.M):
+              sym, objs = m.group(1), m.group(2)
+              if not sym.startswith("CONFIG_IOSCHED_"):
+                  continue
+              in_makefile.add(sym)
+              if sym not in enabled:
+                  continue
+              for o in objs.split():
+                  if o.endswith(".o"):
+                      src = "block/" + o[:-2] + ".c"
+                      checked += 1
+                      if not os.path.isfile(src):
+                          missing.append(sym + " -> falta " + src)
+          active = sorted(x for x in enabled if x.startswith("CONFIG_IOSCHED_"))
+          print("Schedulers activos en .config:", ", ".join(active) or "(ninguno)")
+          orphans = [x for x in active if x not in in_makefile]
+          if orphans:
+              print("AVISO: activos sin regla en block/Makefile:", ", ".join(orphans))
+          if missing:
+              print("ERROR: schedulers activos sin archivo fuente:")
+              for x in missing:
+                  print("  -", x)
+              sys.exit(1)
+          print("Guard de schedulers OK (%d objetos comprobados)" % checked)
+          PYEOF
+          # ------------------------------------------------------------
+          # RED-LAB: informe de que opciones quedaron realmente activas (no fatal)
+          # ------------------------------------------------------------
+          : > out/redlab-status.txt
+          rl_ok=0; rl_total=0
+          for o in $(cat "$GITHUB_WORKSPACE/redlab-opts.txt"); do
+            rl_total=$((rl_total + 1))
+            if grep -q "^CONFIG_$o=y" out/.config; then
+              rl_ok=$((rl_ok + 1)); echo "OK  $o" >> out/redlab-status.txt
+            else
+              echo "NO  $o (no resuelta en .config: dependencia o simbolo ausente)" >> out/redlab-status.txt
+            fi
+          done
+          cat out/redlab-status.txt
+          echo "Red-lab: $rl_ok de $rl_total opciones activas"
+          echo "RL_SUMMARY=$rl_ok de $rl_total activas" >> "$GITHUB_ENV"
+          make O=out -j"$(nproc)"
+      - name: Verify kernel output
+        working-directory: kernel
+        run: |
+          ls -lh out/arch/arm64/boot/Image*
+          if [ ! -f out/arch/arm64/boot/Image ]; then
+            echo "ERROR: Image not generated"
+            exit 1
+          fi
+          echo "Kernel compiled successfully"
+      - name: Verify KernelSU was built
+        working-directory: kernel
+        run: |
+          set -e
+          grep -E "^CONFIG_KSU=y" out/.config
+          grep -E "^CONFIG_OVERLAY_FS=y" out/.config
+          if grep -q "^CONFIG_KPROBES=y" out/.config; then echo "ERROR: KPROBES activo en .config"; exit 1; fi
+          ls -l out/drivers/kernelsu/built-in.o
+          NM="$GITHUB_WORKSPACE/toolchain/aarch64/bin/aarch64-linux-gnu-nm"
+          for s in ksu_handle_execveat_ksud ksu_handle_execveat_sucompat ksu_handle_faccessat ksu_handle_vfs_read ksu_handle_stat ksu_handle_input_handle_event path_umount; do
+            "$NM" out/vmlinux | grep -qE " [Tt] ${s}$" || { echo "ERROR: falta el simbolo $s en vmlinux"; exit 1; }
+            echo "OK  $s"
+          done
+          echo "KernelSU enlazado correctamente (KSU_VERSION esperado 11872)"
+
+      - name: Verify extra governors were built
+        working-directory: kernel
+        run: |
+          grep -E "^CONFIG_CPU_FREQ_GOV_(BLU_ACTIVE|BIOSHOCK|DARKNESS)=y" out/.config
+          grep -q "CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL=y" out/.config || { echo "ERROR: schedutil ya no es el default"; exit 1; }
+          for g in blu_active bioshock darkness; do
+            ls -l out/drivers/cpufreq/cpufreq_$g.o || { echo "ERROR: no se compiló cpufreq_$g.o"; exit 1; }
+          done
+          echo "Gobernadores extra compilados correctamente"
+
+      # ============================================================
+      # 12. EMPAQUETADO CON ANYKERNEL3
+      # ============================================================
+
+      - name: Verify BBR was built
+        working-directory: kernel
+        run: |
+          for o in net/ipv4/tcp_bbr.o net/ipv4/tcp_rate.o lib/win_minmax.o; do
+            if [ -f "out/$o" ]; then echo "OK  $o ($(stat -c%s "out/$o") bytes)"; else echo "FALTA out/$o"; exit 1; fi
+          done
+          grep -E "^CONFIG_TCP_CONG_BBR=y" out/.config || { echo "BBR no quedo activo en .config"; exit 1; }
+
+      - name: Checkout AnyKernel3
+        uses: actions/checkout@v4
+        with:
+          repository: sacksso/AnyKernel3-a7y18lte
+          path: anykernel3
+          fetch-depth: 1
+
+      - name: Copy Image to AnyKernel3
+        run: |
+          cp kernel/out/arch/arm64/boot/Image anykernel3/Image
+          ls -lh anykernel3/Image
+
+      # ============================================================
+      # DIAGNOSTICO: ksud post-fs-data falla con "Permission denied" al
+      # arrancar via init (aunque el binario funciona perfecto corrido a
+      # mano con su), pese a que este anykernel.sh dice en sus
+      # properties "Permissive SELinux". getenforce en el equipo real
+      # confirmo "Enforcing" - se sospecha que ese "Permissive" nunca se
+      # aplico realmente. Se fuerza aca via cmdline para descartar/
+      # confirmar SELinux como causa, antes de tocar sepolicy. Reusa la
+      # misma funcion patch_cmdline ya usada para el parametro de OC
+      # (ver 16_Compile_kernel_testing_final.yml).
+      # ============================================================
+
+      - name: Patch anykernel.sh - force SELinux permissive via cmdline (diagnostico ksud)
+        run: |
+          F=anykernel3/anykernel.sh
+          ANCHOR='dump_boot;'
+          test "$(grep -cF "$ANCHOR" "$F")" = "1" || { echo "ERROR: no se encontro 'dump_boot;' una sola vez en $F - revisar a mano"; exit 1; }
+          grep -q 'patch_cmdline "androidboot.selinux"' "$F" || \
+            sed -i "/$ANCHOR/a patch_cmdline \"androidboot.selinux\" \"androidboot.selinux=permissive\";" "$F"
+          grep -q 'patch_cmdline "androidboot.selinux" "androidboot.selinux=permissive";' "$F" || { echo "ERROR: el patch no se insertó"; exit 1; }
+          echo "--- anykernel.sh final (seccion relevante) ---"
+          grep -n -B2 -A2 'patch_cmdline "androidboot.selinux"' "$F"
+      # ============================================================
+      # FIX CRÍTICO: anykernel.sh (revisado) no define ninguna variable
+      # dtb= ni maneja el DTB de forma explícita - solo llama a
+      # dump_boot/write_boot (librería estándar de AnyKernel3). Sin un
+      # archivo llamado "dtb" en la raíz del ZIP, esa librería CONSERVA
+      # el DTB que ya está en el boot.img actual del teléfono, sin
+      # tocarlo - lo que significa que los cambios de GPU DVFS / input
+      # booster de arriba (viven en el device tree) compilarían bien pero
+      # NUNCA llegarían al equipo. Este step busca el .dtb real generado
+      # por el build (por nombre de dispositivo, para no adivinar entre
+      # varios .dtb si el árbol genera más de uno) y lo copia a la raíz
+      # del ZIP con el nombre que ak3-core.sh espera.
+      # ============================================================
+
+      - name: Copy compiled DTB to AnyKernel3 (dtb changes won't apply without this)
+        run: |
+          echo "--- .dtb generados por este build ---"
+          find kernel/out/arch/arm64/boot/dts -name "*.dtb" 2>/dev/null
+          # Confirmado en dispositivo real: la revisión de placa correcta es
+          # "eur_open_03" (de las 3 generadas: _00/_01/_03). Se fija
+          # explícitamente en vez de exigir un match único ambiguo por nombre
+          # de dispositivo genérico.
+          DTB=$(find kernel/out/arch/arm64/boot/dts -iname "*a7y18lte_eur_open_03.dtb" 2>/dev/null)
+          COUNT=$(echo "$DTB" | grep -c . || true)
+          if [ "$COUNT" != "1" ]; then
+            echo "ERROR: no se encontró exactamente un .dtb *_eur_open_03.dtb ($COUNT encontrados)."
+            echo "Candidatos por nombre de SoC (exynos7885), por si el nombre cambió:"
+            find kernel/out/arch/arm64/boot/dts -iname "*7885*.dtb" 2>/dev/null
+            exit 1
+          fi
+          echo "DTB seleccionado: $DTB"
+          cp "$DTB" anykernel3/dtb
+          ls -lh anykernel3/dtb
+      - name: Create build-info.txt
+        run: |
+          cat > anykernel3/build-info.txt <<EOF
+          ============================================================
+          a7y18lte Kernel Build - TESTING (con mejoras extra)
+          ============================================================
+          Device: Samsung Galaxy A7 2018 (a7y18lte)
+          Model: SM-A750F/FN/G
+          Kernel: Linux 4.4.302
+          Compiler: GCC 6.4.1 (aarch64-linux-gnu) + gcc-arm-linux-gnueabi (32-bit)
+          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Commit: $(git --git-dir=kernel/.git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+          ============================================================
+          Fixes base:
+            - decon_clocks_table: double -> unsigned long
+            - topology.c: corrección de sintaxis en HMP mask
+            - nl80211_vendor.c: inicialización de country_code
+            - sched/tune.h: declaraciones forward de estructuras
+          Mejoras incluidas:
+            - TCP congestion control: cubic (en lugar de bic)
+            - schedutil como gobernador de CPU (por defecto)
+            - lz4 como algoritmo de compresión para zram (zstd no soportado en kernel 4.4)
+            - BFQ I/O scheduler (por defecto, con parche en Kconfig)
+            - WireGuard (VPN moderno, compilado in-tree)
+            - fq qdisc (activo, compilado nativamente en este árbol)
+            - TCP BBR: ${BBR_STATUS:-unavailable} (seleccionable en runtime: net-boost-mode.sh bbr; el default sigue cubic+fq)
+            - KSM (Kernel Samepage Merging, se activa por script)
+            - GPU DVFS: umbrales corregidos en los 3 escalones superiores
+            - Input booster nativo: techo de TOUCH/MULTITOUCH subido a 2184000
+            - Watchdog de salud del touch IC Imagis IST40XX
+            - LMK: 6 niveles reales (4GB RAM, multitarea permisiva - ver nota 2026-10-16)
+            - Gobernadores extra: blu_active, bioshock, darkness (schedutil sigue por defecto)
+            - Guard de schedulers (IOSCHED activos deben tener su .c)
+            - RED-LAB (solo configuracion; default sigue cubic + fq):
+                algoritmos TCP extra: cdg vegas veno illinois yeah hybla highspeed scalable lp
+                qdiscs extra: fq_codel codel pie sfq netem tbf
+                USB Ethernet extra: rndis_host lan78xx dm9601 sr9700 mcs7830
+                diagnostico: pktgen, drop_monitor
+                Opciones realmente activas: ${RL_SUMMARY:-desconocido}
+                Wi-Fi ahorro de energia por defecto: ${WIFI_PS:-sin cambios}
+          Versiones fijadas (SHA):
+            - Kernel upstream: 6020dfa8315134187f07ca903c9d2ed7ee0256f5
+            - Toolchain GCC 6.4.1: 16f73337b3616cfe640b0130629a9569b30482ca
+            - Donante BFQ/WireGuard: 97e4fbcdb31efe88b91cd321dae7bbaece36c51a
+            - Fork backup (gobernadores): 094db06fb7e48e2035263cca7f9fc46a7e0b2490
+          NOTA: build de TESTING. read_ahead_kb, dirty_ratio/dirty_background_ratio,
+          fq/BBR y KSM se activan en runtime desde 99-kernel-tweaks.sh (fuera de este workflow).
+          SELinux: Enforcing (sin cambios)
+          ============================================================
+          EOF
+          cat anykernel3/build-info.txt
+      - name: Create flashable ZIP
+        run: |
+          cd anykernel3
+          zip -r9 ../a7y18lte-Kernel-ksu.zip . -x "*.git*"
+          cd ..
+          ls -lh a7y18lte-Kernel-ksu.zip
+      - name: Upload final ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7y18lte-Kernel-ksu
+          path: a7y18lte-Kernel-ksu.zip
+          if-no-files-found: error
