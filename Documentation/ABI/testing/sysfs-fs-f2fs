@@ -99,6 +99,15 @@ Contact:	"Jaegeuk Kim" <jaegeuk.kim@samsung.com>
 Description:
 		 Controls the number of trials to find a victim segment.
 
+What:		/sys/fs/f2fs/<disk>/migration_granularity
+Date:		October 2018
+Contact:	"Chao Yu" <yuchao0@huawei.com>
+Description:
+		 Controls migration granularity of garbage collection on large
+		 section, it can let GC move partial segment{s} of one section
+		 in one GC cycle, so that dispersing heavy overhead GC to
+		 multiple lightweight one.
+
 What:		/sys/fs/f2fs/<disk>/dir_level
 Date:		March 2014
 Contact:	"Jaegeuk Kim" <jaegeuk.kim@samsung.com>
@@ -234,3 +243,11 @@ Description:
 		 - Del: echo '[h/c]!extension' > /sys/fs/f2fs/<disk>/extension_list
 		 - [h] means add/del hot file extension
 		 - [c] means add/del cold file extension
+
+What:		/sys/fs/f2fs/<disk>/unusable
+Date		April 2019
+Contact:	"Daniel Rosenberg" <drosen@google.com>
+Description:
+		If checkpoint=disable, it displays the number of blocks that are unusable.
+                If checkpoint=enable it displays the enumber of blocks that would be unusable
+                if checkpoint=disable were to be set.

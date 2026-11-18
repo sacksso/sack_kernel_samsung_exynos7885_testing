@@ -2711,6 +2711,7 @@ static inline void lockdep_annotate_inode_mutex_key(struct inode *inode) { };
 #endif
 extern void unlock_new_inode(struct inode *);
 extern unsigned int get_next_ino(void);
+extern void evict_inodes(struct super_block *sb);
 
 extern void __iget(struct inode * inode);
 extern void iget_failed(struct inode *);
@@ -3168,5 +3169,8 @@ extern void inode_nohighmem(struct inode *inode);
 /* for Android P */
 #define AID_USE_ROOT_RESERVED	KGIDT_INIT(5678)
 #endif
+
+int vfs_ioc_setflags_prepare(struct inode *inode, unsigned int oldflags,
+			     unsigned int flags);
 
 #endif /* _LINUX_FS_H */
